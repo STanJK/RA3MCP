@@ -181,13 +181,19 @@ git-status
 
 ## Staging
 
-`scripts/Stage.ps1` 当前仅负责将已经存在的构建产物、许可证、示例配置和 README 复制到 `dist/Release`。它暂时不作为 ToolHub 编译能力暴露。部署目录固定为包含 `RA3.exe` 的游戏根目录：loader 写入 `./d3d9.dll`，配置写入 `./global.ini`，ASI 放入 `./scripts/RA3InputBridge.asi`，运行日志为 `./scripts/RA3InputBridge.log`。`Data/ra3_1.12.game` 是被控制的主模块路径。
+`scripts/Stage.ps1` 当前仅负责将已经存在的 ASI、`ra3ctl.exe`、`ra3trace.exe`、许可证、示例配置和 README 复制到 `dist/Release`。它暂时不作为 ToolHub 编译能力暴露。部署目录固定为包含 `RA3.exe` 的游戏根目录：loader 写入 `./d3d9.dll`，配置写入 `./global.ini`，ASI 放入 `./scripts/RA3InputBridge.asi`，运行日志为 `./scripts/RA3InputBridge.log`。`Data/ra3_1.12.game` 是被控制的主模块路径。
 
 如果 staging 进入日常自动验证流程，再单独实现固定语义 operation；不要因此引入通用 PowerShell 执行能力。
 
+## 启动链诊断
+
+`controller/src/bin/ra3trace.rs` 由 Cargo 自动发现，现有 `cargo-check` / `cargo-build` / `cargo-test` 会覆盖跟踪器，无需新 operation。`cargo-test` 的调试事件冒烟测试只启动自己的测试子进程，及本机已有的 Win32 `ra3_core_tests.exe` fixture，不启动游戏。
+
+游戏跟踪由用户手动执行，命令与日志说明见 [LAUNCH_TRACE.md](LAUNCH_TRACE.md)。日志覆盖继承调试链的进程与 DLL 事件；Steam 通过已有进程代启等脱离调试链的情况仍需补充系统范围跟踪。
+
 ## 游戏内验收（建议离线单人局）
 
-用户已多次测试确认 loader 与 `scripts` 必须放在 `RA3.exe` 旁。每轮记录游戏文件哈希、插件 commit、PID、游戏分辨率和根目录 `scripts/RA3InputBridge.log`。先确认 D3D9 loader、游戏及 ASI 能正常启动，再进入输入测试。当前不要求与 ReShade 共存。
+当前根目录部署日志已确认 ASI 进入 `runme.exe` 和 `RA3.exe`；游戏子进程加载仍需用跟踪器确认。每轮记录游戏文件哈希、插件 commit、PID、游戏分辨率和根目录 `scripts/RA3InputBridge.log`。先确认 D3D9 loader、游戏及 ASI 能正常启动，再进入输入测试。当前不要求与 ReShade 共存。
 
 | 项目 | 操作 | 应检查的结果 |
 | --- | --- | --- |

@@ -51,6 +51,12 @@ UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 D3D9 转发、`InitializeASI` �
 
 父进程跳过不会把 ASI 转发到子进程。只有对应 `.game` PID 的宿主日志才能证明游戏初始化了桥接；只有对应 PID 的 Ready 日志才能证明管道已创建。
 
+## 启动链证据更新
+
+2026-10-17 新版日志实际记录：PID 37980 的宿主为根目录 `runme.exe`（映像大小 `0x35000`，未通过游戏 RVA 范围校验），PID 39656 的宿主为 `RA3.exe`（明确跳过）。该日志未出现 `.game` 的初始化。因此此前根目录实验目前只证实启动器加载有效，不能等同于游戏进程加载成功。
+
+新增 `ra3trace.exe` 使用 Windows `DEBUG_PROCESS` 事件跟踪实际启动链和 DLL 映射，详细用法见 [LAUNCH_TRACE.md](LAUNCH_TRACE.md)。它不注入 ASI；若游戏由调试链外的 Steam 进程代启，需要系统范围跟踪补足。
+
 ## 尚待本机验证
 
 1. 部署目录已确认在 `RA3.exe` 根目录；继续确认 UAL 调用 `InitializeASI`，桥接日志和命名管道可用。

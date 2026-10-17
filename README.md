@@ -2,7 +2,7 @@
 
 红警 3 鼠标控制桥接首版：`RA3InputBridge.asi` 在游戏进程内转发输入，外部 Rust `ra3ctl.exe` 通过命名管道控制移动、点击、拖动与滚轮。项目当前是输入桥接基础，尚未提供 MCP server。
 
-**状态：本机 MSVC Win32 Release 构建、1 项 CTest 和 3 项 Rust 测试已通过；游戏内加载和输入效果待验证。** 后续编译与测试仅通过用户本机 Toolhub 运行，远端只进行静态检查。尚不能把这份源码视为已验证的游戏插件。
+**状态：本机 MSVC Win32 Release 构建、CTest 和原控制器 Rust 测试已通过；游戏子进程加载和输入效果待验证。** 后续编译与测试仅通过用户本机 Toolhub 运行，远端只进行静态检查。尚不能把这份源码视为已验证的游戏插件。
 
 ## 目标版本
 
@@ -49,7 +49,7 @@ Rust 无第三方 crate，脚本使用 `--locked --offline`。首次安装工具
 ## ASI 加载（D3D9）
 
 1. 退出游戏和启动器。Steam 启动选项使用 `-runver 1.12 -win -xres 1920 -yres 1080`，确认实际进程为 `Data/ra3_1.12.game`；桥接仍会核对文件哈希。
-2. 加载目录固定为 **包含 `RA3.exe` 的游戏根目录**。用户于 2026-10-17 多次测试确认：`d3d9.dll` 与 `scripts` 必须放在这里。
+2. 加载目录固定为 **包含 `RA3.exe` 的游戏根目录**。用户于 2026-10-17 测试确认这里会加载代理和 ASI；后续日志目前只证实进入了 `runme.exe`、`RA3.exe`，游戏子进程的加载位置仍需跟踪确认。
 3. 将先前为本项目部署的 UAL `winmm.dll` 移到游戏目录外保存。若加载目录已有 `d3d9.dll` 或 `d3d9Hooked.dll`，也先移出保存；本方案不与 ReShade 共存。
 4. 把 `downloads/ual-win32/d3d9.dll` 复制到加载目录。它是已校验的 UAL v9.7.4 Win32 loader，包内原名为 `dinput8.dll`；不需要重新下载或编译。
 5. **手动创建**加载目录下的 `scripts` 文件夹，将 `dist/Release/scripts/RA3InputBridge.asi` 放进去。游戏和 UAL 不会为部署自动创建这个文件夹。
@@ -67,7 +67,7 @@ Rust 无第三方 crate，脚本使用 `--locked --offline`。首次安装工具
 
 当前本机游戏根目录为 `C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3`。运行时日志按 ASI 自身所在目录写入，因此正确部署后位于该根目录的 `scripts\RA3InputBridge.log`。迁移时把此前为本项目放入 `Data` 的 loader、配置和 ASI 移到游戏目录外备份。
 
-D3D9 在本版只负责把 ASI 加载进游戏。桥接的鼠标输入仍通过游戏原生输入泵与队列转发。Loader 与插件目录位置已经由用户实测确认；管道握手和输入效果仍需逐项验收。
+D3D9 在本版只负责把 ASI 加载进游戏。桥接的鼠标输入仍通过游戏原生输入泵与队列转发。根目录位置已证实对启动器有效；游戏子进程加载、管道握手和输入效果仍需逐项验收。
 
 ASI 通过 `InitializeASI` 启动工作线程，`DllMain` 不安装 hook。模块初始化后固定驻留至进程退出；**首版没有热卸载**，替换插件前退出游戏。卸载时移走新增加的 ASI/loader，按备份恢复已有文件。
 
@@ -80,10 +80,16 @@ UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。
 `scripts/RA3InputBridge.log` 每行带 `[pid=...]`，每次初始化记录宿主可执行文件与 ASI 的完整路径。游戏校验还会记录 PE 架构、映像大小、实际与预期 SHA-256；文件读取和 BCrypt 失败分别给出 Win32 error 或 NTSTATUS。
 
 - 只有 `Host executable: ...RA3.exe` 和 `Skipped launcher`：当前日志只证明启动器初始化了桥接，还需确认游戏子进程是否加载代理。
-- 有 `Host executable: ...Dataa3_1.12.game` 且出现哈希不匹配：ASI 已进入游戏进程，继续核对实际二进制版本；保留原版本约束。
+- 有 `Host executable: ...Data/ra3_1.12.game` 且出现哈希不匹配：ASI 已进入游戏进程，继续核对实际二进制版本；保留原版本约束。
 - 出现文件读取或 BCrypt 错误：按日志中的具体错误排查，不能归结为版本不符。
 - 游戏 PID 出现 `Ready: \\.\pipe\RA3MCP.<PID>`：桥接管道已创建，再按下面步骤测试输入。
 
+
+## 启动链跟踪
+
+新增独立外部 `ra3trace.exe`，用 Windows 调试事件记录启动器和继承调试链的子进程、DLL 实际加载路径、调试输出、异常和退出。现有 Toolhub `cargo-build` 会同时构建它；`cargo-test` 包含子进程冒烟测试，不启动游戏。
+
+手动跟踪命令、日志位置和范围限制见 [启动链跟踪](docs/LAUNCH_TRACE.md)。它不会注入桥接，当前需要先查清 `.game` 是否加载 UAL/ASI，再进行下面的鼠标测试。
 
 ## 点击和拖动
 
