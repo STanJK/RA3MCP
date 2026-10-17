@@ -41,7 +41,7 @@ MinHook detour 采用 `int __fastcall hookedPump(void* self, void* unusedEdx)`�
 
 目标导入表包含 Direct3D9 的 `Direct3DCreate9`，也包含 WinMM 的 `timeBeginPeriod/timeEndPeriod/timeGetTime`。2026-10-17 本机尝试 WinMM 后未得到桥接加载日志；该现象还不足以判定底层原因。用户随后确认根目录的 D3D9 和 WinMM 代理均可加载，路径而非代理名称是本轮实测差异；当前脚本默认准备 UAL `d3d9.dll`，不要求与 ReShade 共存。
 
-UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 D3D9 转发、`InitializeASI` 导出查找/调用与 `DontLoadFromDllMain` 配置。提供的 Win32 loader PE 导出表确有 `Direct3DCreate9` 与 `Direct3DCreate9Ex`。2026-10-17 用户多次实测确认加载目录必须为包含 `RA3.exe` 的游戏根目录：`./d3d9.dll`、`./global.ini`、`./scripts/RA3InputBridge.asi`；日志写入 `./scripts/RA3InputBridge.log`。主模块哈希校验仍读取实际运行的 `Data/ra3_1.12.game`。
+UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 D3D9 转发、`InitializeASI` 导出查找/调用与 `DontLoadFromDllMain` 配置。提供的 Win32 loader PE 导出表确有 `Direct3DCreate9` 与 `Direct3DCreate9Ex`。早期根目录实验仅验证启动器加载，不能据此断言游戏也使用根目录。后续成功实验同时保留根目录和 Data 的副本；游戏 ASI 的实际位置为 `Data/scripts/RA3InputBridge.asi`，日志为同目录的 `RA3InputBridge.log`。主模块哈希校验仍读取实际运行的 `Data/ra3_1.12.game`。
 
 本机 MSVC Win32 Release 已成功链接 ASI，CTest 1/1、Rust 测试 3/3 通过。`bridge.def` 直接导出 `InitializeASI`，修复了原下划线别名触发的链接错误；PE 导出表拼写尚需独立检查。
 
@@ -59,9 +59,15 @@ UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 D3D9 转发、`InitializeASI` �
 
 新增 `ra3trace.exe` 使用 Windows `DEBUG_PROCESS` 事件跟踪实际启动链和 DLL 映射，详细用法见 [LAUNCH_TRACE.md](LAUNCH_TRACE.md)。它不注入 ASI；若游戏由调试链外的 Steam 进程代启，需要系统范围跟踪补足。
 
+2026-10-17 20:27（Asia/Shanghai）用户把 WinMM、global.ini、scripts 复制到 Data，根目录副本同时存在。PID 39836 的宿主为 `Data/RA3_1.12.game`，ASI 为 `Data/scripts/RA3InputBridge.asi`；machine=0x014C、magic=0x010B、SizeOfImage=0x00950000，实际 SHA-256 与固定预期一致。随后输出 Verified 和 `Ready: \\.\pipe\RA3MCP.39836`，证明该轮游戏内初始化、Hook 安装和管道创建成功。
+
+20:30 移出根目录文件后的跟踪：RA3.exe PID 36340 只加载系统 WinMM；游戏 PID 40564 加载 Data/winmm.dll 和系统 WinMM，但没有 ASI 映射。此前推荐“只保留 Data 即可”尚未成立，不能继续作为已验证结论。
+
+UAL v9.7.4 的 Init 默认调用 HookIAT；拦截未成功时只 LoadOriginalLibrary，不会自动 LoadEverything。LoadPluginsAndRestoreIAT 还过滤调用来源及 .bind 区域。该机制与“有代理无插件”吻合，但尚未确定本机触发了哪条分支；成功与失败实验的调试方式也需控制。下一轮只在 Data/global.ini 测试 DontLoadFromDllMain=0、ForceEntryPointHook=0 的直接初始化模式；保留固定哈希约束，尚未固化为默认配置。
+
 ## 尚待本机验证
 
-1. 部署目录已确认在 `RA3.exe` 根目录；继续确认 UAL 调用 `InitializeASI`，桥接日志和命名管道可用。
+1. 区分调试器/普通启动与 UAL 延迟初始化的影响；验证 Data 单目录直接初始化模式。双目录游戏加载与 Ready 已通过。
 2. 命名管道握手，以及原循环消费合成事件后的实际 UI 点击、地图移动命令与拖动框选效果。
 3. 窗口缩放/分辨率变更、实体鼠标同时输入的行为。
 

@@ -181,7 +181,7 @@ git-status
 
 ## Staging
 
-`scripts/Stage.ps1` 当前仅负责将已经存在的 ASI、`ra3ctl.exe`、`ra3trace.exe`、许可证、示例配置和 README 复制到 `dist/Release`。它暂时不作为 ToolHub 编译能力暴露。部署目录固定为包含 `RA3.exe` 的游戏根目录：loader 写入 `./d3d9.dll`，配置写入 `./global.ini`，ASI 放入 `./scripts/RA3InputBridge.asi`，运行日志为 `./scripts/RA3InputBridge.log`。`Data/ra3_1.12.game` 是被控制的主模块路径。
+`scripts/Stage.ps1` 当前仅负责将已经存在的 ASI、`ra3ctl.exe`、`ra3trace.exe`、许可证、示例配置和 README 复制到 `dist/Release`。它暂时不作为 ToolHub 编译能力暴露。当前成功实验同时保留根目录和 Data 的副本；游戏加载位置为 `Data/winmm.dll`、`Data/global.ini` 和 `Data/scripts/RA3InputBridge.asi`，日志为 `Data/scripts/RA3InputBridge.log`。准备产物 `downloads/ual-win32/d3d9.dll` 在 WinMM 部署时改名。单目录初始化方式仍在验证。`Data/ra3_1.12.game` 是被控制的主模块路径。
 
 如果 staging 进入日常自动验证流程，再单独实现固定语义 operation；不要因此引入通用 PowerShell 执行能力。
 
@@ -193,7 +193,7 @@ git-status
 
 ## 游戏内验收（建议离线单人局）
 
-当前根目录部署日志已确认 ASI 进入 `runme.exe` 和 `RA3.exe`；游戏子进程加载仍需用跟踪器确认。每轮记录游戏文件哈希、插件 commit、PID、游戏分辨率和根目录 `scripts/RA3InputBridge.log`。先确认 D3D9 loader、游戏及 ASI 能正常启动，再进入输入测试。当前不要求与 ReShade 共存。
+2026-10-17 双目录实验中，游戏 PID 39836 从 Data 加载 ASI，通过固定哈希校验、安装 Hook 并创建管道。移出根目录副本后的跟踪只见 Data 代理，未见 ASI，仍需验证初始化模式；具体原因尚未确认。每轮记录游戏文件哈希、插件 commit、PID、分辨率和 `Data/scripts/RA3InputBridge.log`，以对应游戏 PID 的 Ready 为输入验收前提。当前不要求与 ReShade 共存。
 
 | 项目 | 操作 | 应检查的结果 |
 | --- | --- | --- |

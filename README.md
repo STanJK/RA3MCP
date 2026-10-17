@@ -9,7 +9,7 @@
 - 32 位 `ra3_1.12.game`，IDA image base `0x400000`。
 - 文件 SHA-256：`dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0`。
 - 模块加载后先核对架构、映像范围、文件哈希；不匹配时记录日志并拒绝安装 hook。
-- 被控制和校验的进程为 `Data/ra3_1.12.game`；Loader、配置和 `scripts` 部署在包含 `RA3.exe` 的游戏根目录。
+- 被控制和校验的进程为 `Data/ra3_1.12.game`；游戏进程的 Loader、配置和 `scripts` 位于 `Data`；当前成功实验同时保留了根目录副本，单目录初始化方式仍在验证。
 
 地址、对象关系和调用约定见 [逆向记录](docs/REVERSE_ENGINEERING.md)。
 
@@ -46,38 +46,36 @@ RA3MCP/
 
 Rust 无第三方 crate，脚本使用 `--locked --offline`。首次安装工具链本身仍需要 Rustup 下载。构建脚本不下载依赖，也不自动修改游戏目录。
 
-## ASI 加载（D3D9）
+## ASI 加载（WinMM，已验证双目录实验）
 
-1. 退出游戏和启动器。Steam 启动选项使用 `-runver 1.12 -win -xres 1920 -yres 1080`，确认实际进程为 `Data/ra3_1.12.game`；桥接仍会核对文件哈希。
-2. 加载目录固定为 **包含 `RA3.exe` 的游戏根目录**。用户于 2026-10-17 测试确认这里会加载代理和 ASI；后续日志目前只证实进入了 `runme.exe`、`RA3.exe`，游戏子进程的加载位置仍需跟踪确认。
-3. 将先前为本项目部署的 UAL `winmm.dll` 移到游戏目录外保存。若加载目录已有 `d3d9.dll` 或 `d3d9Hooked.dll`，也先移出保存；本方案不与 ReShade 共存。
-4. 把 `downloads/ual-win32/d3d9.dll` 复制到加载目录。它是已校验的 UAL v9.7.4 Win32 loader，包内原名为 `dinput8.dll`；不需要重新下载或编译。
-5. **手动创建**加载目录下的 `scripts` 文件夹，将 `dist/Release/scripts/RA3InputBridge.asi` 放进去。游戏和 UAL 不会为部署自动创建这个文件夹。
-6. 将 `config/global.ini.example` 的配置合并到加载目录的 `global.ini`；没有该文件时复制并去掉 `.example` 后缀。`DontLoadFromDllMain=1` 使 UAL 在其延迟加载路径调用 `InitializeASI`。
-7. 启动游戏，查看加载目录的 `scripts/RA3InputBridge.log`。成功时有 `Ready: \\.\pipe\RA3MCP.<PID>`。没有日志时还需检查进程模块、命名管道和日志目录写权限，不能仅凭日志缺失认定 DLL 未加载。
+1. 退出游戏和启动器，启动参数使用 `-win -xres 1920 -yres 1080 -runver 1.12`，实际目标为 `Data/ra3_1.12.game`。
+2. 2026-10-17 的成功实验在游戏根目录和 Data 各保留了一套 WinMM、global.ini 和 scripts。游戏 PID 39836 从 `Data/scripts/RA3InputBridge.asi` 初始化，通过固定 SHA-256 校验、安装 Hook 并创建管道。这一结果尚未证明根目录副本是必需条件。
+3. 同一目录只部署一种 UAL 代理；本轮使用 WinMM。准备脚本仍生成 `downloads/ual-win32/d3d9.dll`，可将同一个已校验的通用 UAL Win32 loader 复制并改名为 `winmm.dll`，也可使用先前已验证的同一 WinMM 文件。
+4. 在需要加载 UAL 的目录放置 `winmm.dll`、`global.ini` 和 `scripts/RA3InputBridge.asi`。`scripts` 需手动创建；配置来自 `config/global.ini.example`。已有的其他插件或配置不应被整目录覆盖。
+5. 查看对应 ASI 目录下的 `RA3InputBridge.log`。游戏 PID 应出现宿主 `Data/RA3_1.12.game`、匹配的 SHA-256，以及 `Ready: \\.\pipe\RA3MCP.<PID>`。日志为追加写入，复制旧 scripts 时也会带入旧启动器记录，应按本轮 PID 判断。
 
-所有部署路径均相对于 `RA3.exe` 所在根目录：
+以下路径相对于包含 RA3.exe 的游戏根目录：
 
-| 文件 | 游戏内位置 |
+| 文件 | 已验证的游戏进程位置 |
 | --- | --- |
-| UAL loader | `./d3d9.dll` |
-| UAL 配置 | `./global.ini` |
-| 桥接插件 | `./scripts/RA3InputBridge.asi` |
-| 运行时日志 | `./scripts/RA3InputBridge.log` |
+| UAL loader | `Data/winmm.dll` |
+| UAL 配置 | `Data/global.ini` |
+| 桥接插件 | `Data/scripts/RA3InputBridge.asi` |
+| 运行日志 | `Data/scripts/RA3InputBridge.log` |
 
-当前本机游戏根目录为 `C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3`。运行时日志按 ASI 自身所在目录写入，因此正确部署后位于该根目录的 `scripts\RA3InputBridge.log`。迁移时把此前为本项目放入 `Data` 的 loader、配置和 ASI 移到游戏目录外备份。
+移出根目录副本后的跟踪已看到游戏 PID 40564 加载 `Data/winmm.dll` 和系统 WinMM，但没有映射 ASI。因此不能把“代理已加载”当成“插件已初始化”。UAL 默认通过 IAT API 拦截延迟加载插件，拦截未成功时可能只转发系统 DLL；具体触发原因还待区分。两次实验也可能存在调试器和普通启动的差异。
 
-D3D9 在本版只负责把 ASI 加载进游戏。桥接的鼠标输入仍通过游戏原生输入泵与队列转发。根目录位置已证实对启动器有效；游戏子进程加载、管道握手和输入效果仍需逐项验收。
+单目录兼容性测试：只在 `Data/global.ini` 将 `DontLoadFromDllMain=0`、`ForceEntryPointHook=0`，保留 `LoadPlugins=1`、`LoadFromScriptsOnly=1`、`LoadRecursively=0`，使 UAL 直接扫描插件。此模式尚未在用户游戏中验证，不能先作为已完成的修复；测试细节见 [启动链诊断](docs/LAUNCH_TRACE.md)。桥接的哈希校验与工作线程初始化仍保留。
 
 ASI 通过 `InitializeASI` 启动工作线程，`DllMain` 不安装 hook。模块初始化后固定驻留至进程退出；**首版没有热卸载**，替换插件前退出游戏。卸载时移走新增加的 ASI/loader，按备份恢复已有文件。
 
 ## 加载进程与版本诊断
 
-UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。当前准备脚本默认生成 `d3d9.dll`；如使用已验证的 WinMM 路径，可将同一个已校验的 loader 改名为 `winmm.dll`。同一轮只部署一种 UAL 代理，配置和 `scripts` 始终位于 `RA3.exe` 根目录。
+UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。当前准备脚本默认生成 `d3d9.dll`；如使用已验证的 WinMM 路径，可将同一个已校验的 loader 改名为 `winmm.dll`。同一目录只部署一种 UAL 代理；游戏进程的配置与 ASI 在 Data，根目录副本目前属于成功对照实验的一部分。
 
-启动器 `RA3.exe` 和 `Data/ra3_1.12.game` 是独立进程。ASI 被启动器加载后会记录 `Skipped launcher RA3.exe` 并跳过全部游戏 Hook；这不会替子进程加载 DLL。游戏进程需要自行加载根目录的 UAL 和 ASI。
+启动器 `RA3.exe` 和 `Data/ra3_1.12.game` 是独立进程。ASI 被启动器加载后会记录 `Skipped launcher RA3.exe` 并跳过全部游戏 Hook；这不会替子进程加载 DLL。游戏进程需要自行加载 Data 的 UAL 和 ASI。
 
-`scripts/RA3InputBridge.log` 每行带 `[pid=...]`，每次初始化记录宿主可执行文件与 ASI 的完整路径。游戏校验还会记录 PE 架构、映像大小、实际与预期 SHA-256；文件读取和 BCrypt 失败分别给出 Win32 error 或 NTSTATUS。
+`Data/scripts/RA3InputBridge.log` 每行带 `[pid=...]`，每次初始化记录宿主可执行文件与 ASI 的完整路径。游戏校验还会记录 PE 架构、映像大小、实际与预期 SHA-256；文件读取和 BCrypt 失败分别给出 Win32 error 或 NTSTATUS。
 
 - 只有 `Host executable: ...RA3.exe` 和 `Skipped launcher`：当前日志只证明启动器初始化了桥接，还需确认游戏子进程是否加载代理。
 - 有 `Host executable: ...Data/ra3_1.12.game` 且出现哈希不匹配：ASI 已进入游戏进程，继续核对实际二进制版本；保留原版本约束。
@@ -89,7 +87,7 @@ UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。
 
 新增独立外部 `ra3trace.exe`，用 Windows 调试事件记录启动器和继承调试链的子进程、DLL 实际加载路径、调试输出、异常和退出。现有 Toolhub `cargo-build` 会同时构建它；`cargo-test` 包含子进程冒烟测试，不启动游戏。
 
-手动跟踪命令、日志位置和范围限制见 [启动链跟踪](docs/LAUNCH_TRACE.md)。它不会注入桥接，当前需要先查清 `.game` 是否加载 UAL/ASI，再进行下面的鼠标测试。
+手动跟踪命令、日志位置和范围限制见 [启动链跟踪](docs/LAUNCH_TRACE.md)。它不会注入桥接，双目录实验已确认游戏初始化桥接；单目录初始化方式仍在验证，输入测试以对应游戏 PID 的 Ready 为前提。
 
 ## 点击和拖动
 

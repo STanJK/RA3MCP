@@ -65,7 +65,7 @@ try {
     }
     Write-Output "MinHook source ready: $destination"
     Write-Output "Win32 loader ready: $loaderDestination"
-    Write-Output 'Deployment root: the directory containing RA3.exe. Place d3d9.dll and global.ini there; ASI plugins go in its scripts directory.'
+    Write-Output 'Verified experiment kept root and Data copies. Game-side files: Data/winmm.dll, Data/global.ini, Data/scripts/RA3InputBridge.asi. See README for initialization diagnostics.'
     Write-Output 'No compilation or game installation performed. Build and test via local Toolhub.'
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force

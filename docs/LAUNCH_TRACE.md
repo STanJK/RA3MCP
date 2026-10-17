@@ -4,13 +4,32 @@
 
 ## 本轮已知事实
 
-2026-10-17 的桥接日志显示根目录 ASI 进入了 `runme.exe`（PID 37980）和 `RA3.exe`（PID 39656），还没有 `.game` 的初始化记录。因此，根目录部署目前只证实了启动器加载；不能由此认定游戏子进程也加载了代理。
+2026-10-17 的桥接日志显示根目录 ASI 进入了 `runme.exe`（PID 37980）和 `RA3.exe`（PID 39656），当时没有 `.game` 的初始化记录；根目录实验仅证实启动器加载。
 
 用户确认 `runme.exe` 是 Steam 的代理入口；本轮手动跟踪从游戏根目录的 `RA3.exe` 开始，传入 `-win -xres 1920 -yres 1080 -runver 1.12`。已提供的启动命令显示 `Data/RA3_1.12.game` 收到窗口参数和 `-config "<游戏根目录>/RA3_English_1.12.SkuDef"`；实际父子关系和 DLL 路径仍由跟踪日志确认。
 
-首轮跟踪记录了 `RA3.exe`（PID 27128）创建 `Data/ra3_1.13.game`（PID 38488）；根目录 WinMM 和 ASI 进入启动器，游戏加载的是系统 WinMM/D3D9。该轮跟踪器把普通参数也分别加上引号，并将 canonicalize 的 `\\?\` 路径直接传给启动器，生成的原始命令与用户能正常启动 1.12 的手动命令不同。当前已修正为普通 drive/UNC 路径，并只在参数为空或包含空格、制表符、双引号时转义。新增完整 RA3 原始命令回归测试，以及读取子进程 `GetCommandLineW` 的实际传参验证；修正后的游戏版本与加载路径仍待用户复测。
+首轮跟踪记录了 `RA3.exe`（PID 27128）创建 `Data/ra3_1.13.game`（PID 38488）；根目录 WinMM 和 ASI 进入启动器，游戏加载的是系统 WinMM/D3D9。该轮跟踪器把普通参数也分别加上引号，并将 canonicalize 的 `\\?\` 路径直接传给启动器，生成的原始命令与用户能正常启动 1.12 的手动命令不同。当前已修正为普通 drive/UNC 路径，并只在参数为空或包含空格、制表符、双引号时转义。新增完整 RA3 原始命令回归测试，以及读取子进程 `GetCommandLineW` 的实际传参验证；后续跟踪已确认正确启动 1.12，插件初始化问题见下面的证据更新。
 
 跟踪目标是逐个回答：实际创建了哪些进程、它们的父 PID 是谁、`.game` 从哪里启动、每个进程加载的 `winmm.dll` / `d3d9.dll` 是本地还是系统文件，以及 `RA3InputBridge.asi` 是否映射进 `.game`。
+
+## 插件初始化证据更新
+
+修正传参后的跟踪记录 RA3.exe PID 39476 创建游戏 PID 23812；根目录代理和 ASI 只进入启动器，游戏使用系统 WinMM/D3D9。用户随后在 Data 补上 WinMM、配置和 scripts，保留根目录副本时，游戏 PID 39836 从 Data 加载 ASI，通过固定 SHA-256 校验并输出 Ready。
+
+移出根目录副本后的跟踪记录游戏 PID 40564 加载 Data/winmm.dll，未映射 ASI。下一步定位的是插件初始化，不能继续归为代理未加载。成功记录与该轮跟踪还可能存在调试器差异；目前没有充分证据断言根目录副本是必需的。
+
+保持 Data 的文件布局，退出游戏后仅修改 Data/global.ini，测试 UAL 的直接初始化模式：
+
+```ini
+[GlobalSets]
+LoadPlugins=1
+DontLoadFromDllMain=0
+ForceEntryPointHook=0
+LoadFromScriptsOnly=1
+LoadRecursively=0
+```
+
+这会在 UAL 自身的 DllMain 内扫描/加载插件并调用 InitializeASI；桥接的 DllMain 仍不安装 Hook，InitializeASI 只启动工作线程，版本校验和 Hook 安装在线程中执行。此模式是尚待用户验证的兼容性测试。若仍失败，保留这轮跟踪；恢复已验证双目录对照时将 DontLoadFromDllMain 改回 1，并保持其他变量一致。
 
 ## 构建
 

@@ -1,5 +1,6 @@
-; Deploy as <game root>/global.ini, beside RA3.exe and d3d9.dll.
-; Plugins: <game root>/scripts/*.asi.
+; Game-side copy: <game root>/Data/global.ini, beside ra3_1.12.game and winmm.dll.
+; Plugins: <game root>/Data/scripts/*.asi. The successful experiment also kept root copies.
+; Default remains delayed initialization; the Data-only direct-init probe is documented in docs/LAUNCH_TRACE.md.
 [GlobalSets]
 LoadPlugins=1
 DontLoadFromDllMain=1
