@@ -2,7 +2,7 @@
 
 红警 3 控制与观测桥接：`RA3InputBridge.asi` 在游戏进程内转发鼠标输入，同时维护异步 AI data plane；外部 Rust `ra3ctl.exe` 通过命名管道控制移动、点击、拖动与滚轮，也可把最新 Skirmish AI 状态一次性导出为带时间戳的 JSON。鼠标工具同时提供原 CLI 和常驻 stdio MCP 服务；AI probe 当前只开放 CLI。
 
-**状态：本机原生构建与测试通过，用户已确认游戏加载、CLI ping、点击和拖动有效；MCP 初版通过本机检查和模拟管道集成测试，最终补充修改待本机复验与 Release 构建。** 远端只编辑源码和静态检查；本机验证命令见 [MCP 接入规范](docs/MCP_TOOLHUB.md)。Toolhub 的代码、配置和注册由专门会话负责。
+**状态：本机原生构建、原生测试与 Rust 全量测试通过；用户已确认游戏加载、CLI ping、点击和拖动有效。** 本机验证命令见 [MCP 接入规范](docs/MCP_TOOLHUB.md)。Toolhub 的代码、配置和注册由专门会话负责。
 
 ## 目标版本
 
@@ -24,7 +24,7 @@ $gamePid = (Get-CimInstance Win32_Process -Filter "Name='ra3_1.12.game'").Proces
 .\target\release\ra3ctl.exe --pid $gamePid probe
 ```
 
-默认生成 `dumps/ra3-ai-probe-<PID>-<UTC>-g<generation>.json`。可用 `probe --output <file>` 指定文件，已有文件不会被覆盖。v2 导出已验证的 `player_id`（PlayerList slot）、Player 原始控制/状态字段、Player/Personality/各 AI manager 地址、战略状态分数与 vector 元数据、定时器、directive、游戏帧及采集/导出时间。完整字段和二进制协议见 [AI Probe](docs/AI_PROBE.md)。
+默认生成 `dumps/ra3-ai-probe-<PID>-<UTC>-g<generation>.json`。可用 `probe --output <file>` 指定文件，已有文件不会被覆盖。v3 JSON 固定分为 `rough_snapshot` 和 `raw_data`：前者把 Personality、战略/预算/建造状态、战略指令、预算账户和战术类翻译成稳定名称；后者保留地址、AssetId、float bits、vector 边界、目标记录和战术对象原始字。完整字段和二进制协议见 [AI Probe](docs/AI_PROBE.md)。
 
 ## 本机准备与构建
 
