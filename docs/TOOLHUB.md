@@ -12,7 +12,7 @@ ToolHub 不调用 `scripts/Build.ps1` / `Test.ps1` / `Stage.ps1` 作为编译入
 
 ## 依赖准备（本机一次性操作）
 
-把 `minhook-1.3.4.zip` 和 `Ultimate-ASI-Loader-NoPDB.zip` 放入仓库 `downloads/`，在本机手动运行 `scripts/Prepare-Dependencies.ps1`。脚本校验固定 SHA-256，准备 `third_party/minhook` 与 `downloads/ual-win32/winmm.dll`，不编译、不下载、不改游戏目录。ZIP 在其他位置时可传 `-MinHookZip` 和 `-LoaderZip`。
+把 `minhook-1.3.4.zip` 和 `Ultimate-ASI-Loader-NoPDB.zip` 放入仓库 `downloads/`，在本机手动运行 `scripts/Prepare-Dependencies.ps1`。脚本校验固定 SHA-256，准备 `third_party/minhook` 与 `downloads/ual-win32/d3d9.dll`，不编译、不下载、不改游戏目录。ZIP 在其他位置时可传 `-MinHookZip` 和 `-LoaderZip`。
 
 此脚本仅用于本机准备，不作为 ToolHub operation 暴露；后续编译仍使用下列固定工具链命令。
 
@@ -187,7 +187,7 @@ git-status
 
 ## 游戏内验收（建议离线单人局）
 
-每轮记录游戏文件哈希、插件 commit、PID、游戏分辨率和日志。先确认 ReShade、游戏及 ASI 能共同正常启动，再进入输入测试。
+每轮记录游戏文件哈希、插件 commit、PID、游戏分辨率和日志。先确认 D3D9 loader、游戏及 ASI 能正常启动，再进入输入测试。当前不要求与 ReShade 共存。
 
 | 项目 | 操作 | 应检查的结果 |
 | --- | --- | --- |

@@ -39,15 +39,16 @@ MinHook detour 采用 `int __fastcall hookedPump(void* self, void* unusedEdx)`�
 
 ## 加载选择
 
-目标导入表包含 Direct3D9 的 `Direct3DCreate9`，也包含 WinMM 的 `timeBeginPeriod/timeEndPeriod/timeGetTime`。选择 UAL 的 `winmm.dll` 转发加载路径，给已有 ReShade 的 `d3d9.dll` 留出位置。
+目标导入表包含 Direct3D9 的 `Direct3DCreate9`，也包含 WinMM 的 `timeBeginPeriod/timeEndPeriod/timeGetTime`。2026-10-17 本机尝试 WinMM 后未得到桥接加载日志；该现象还不足以判定底层原因。用户已确认 D3D9 代理可加载，当前改用 UAL `d3d9.dll`，不要求与 ReShade 共存。
 
-UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 `InitializeASI` 导出查找/调用、`DontLoadFromDllMain` 配置，以及 WinMM 真正系统库的转发路径。具体搜索目录和与用户现有插件的兼容性必须本机实测。
+UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 D3D9 转发、`InitializeASI` 导出查找/调用与 `DontLoadFromDllMain` 配置。提供的 Win32 loader PE 导出表确有 `Direct3DCreate9` 与 `Direct3DCreate9Ex`。加载目录由实际代理加载位置确定；`global.ini` 与手动创建的 `scripts` 均放在该目录下。
+
+本机 MSVC Win32 Release 已成功链接 ASI，CTest 1/1、Rust 测试 3/3 通过。`bridge.def` 直接导出 `InitializeASI`，修复了原下划线别名触发的链接错误；PE 导出表拼写尚需独立检查。
 
 ## 尚待本机验证
 
-1. MSVC x86 构建及导出表中的未修饰 `InitializeASI`。
-2. 目标游戏加载 `Data/winmm.dll`，UAL 延迟加载 `scripts/RA3InputBridge.asi`。
-3. 原循环消费合成事件后的实际 UI 点击、地图移动命令与拖动框选效果。
-4. ReShade 共存、窗口缩放/分辨率变更、实体鼠标同时输入的行为。
+1. 目标游戏实际加载 UAL `d3d9.dll`，UAL 加载 `scripts/RA3InputBridge.asi` 并调用 `InitializeASI`。
+2. 命名管道握手，以及原循环消费合成事件后的实际 UI 点击、地图移动命令与拖动框选效果。
+3. 窗口缩放/分辨率变更、实体鼠标同时输入的行为。
 
 静态分析给出了调用约定和可用注入层，但尚未证明实时输入语义完全符合预期。若内置鼠标位置在后续原生采样中被覆盖，需要本地记录和调整输入层，不能靠静态报告宣称完成。

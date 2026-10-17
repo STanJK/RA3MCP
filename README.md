@@ -2,7 +2,7 @@
 
 红警 3 鼠标控制桥接首版：`RA3InputBridge.asi` 在游戏进程内转发输入，外部 Rust `ra3ctl.exe` 通过命名管道控制移动、点击、拖动与滚轮。项目当前是输入桥接基础，尚未提供 MCP server。
 
-**状态：实现已提交，待本机 Windows 编译、单元测试和游戏内验证。** 后续编译与测试仅通过用户本机 Toolhub 运行，远端只进行静态检查。尚不能把这份源码视为已验证的游戏插件。
+**状态：本机 MSVC Win32 Release 构建、1 项 CTest 和 3 项 Rust 测试已通过；游戏内加载和输入效果待验证。** 后续编译与测试仅通过用户本机 Toolhub 运行，远端只进行静态检查。尚不能把这份源码视为已验证的游戏插件。
 
 ## 目标版本
 
@@ -23,7 +23,7 @@
 .\scripts\Prepare-Dependencies.ps1
 ```
 
-脚本核对固定 SHA-256，把 MinHook 源码放到 `third_party/minhook`，并从 Loader 包的 `dinput8.dll` 准备 `downloads/ual-win32/winmm.dll`。它不编译、不下载，也不改游戏目录；遇到内容不同的现有文件会拒绝覆盖。ZIP 在其他位置时可传 `-MinHookZip` 和 `-LoaderZip`。
+脚本核对固定 SHA-256，把 MinHook 源码放到 `third_party/minhook`，并从 Loader 包的 `dinput8.dll` 准备 `downloads/ual-win32/d3d9.dll`。它不编译、不下载，也不改游戏目录；遇到内容不同的现有文件会拒绝覆盖。ZIP 在其他位置时可传 `-MinHookZip` 和 `-LoaderZip`。
 
 也可手工将 MinHook v1.3.4 源码解压、重命名为以下目录；不要求下载 MinHook 预编译库：
 
@@ -46,15 +46,26 @@ RA3MCP/
 
 Rust 无第三方 crate，脚本使用 `--locked --offline`。首次安装工具链本身仍需要 Rustup 下载。构建脚本不下载依赖，也不自动修改游戏目录。
 
-## ASI 加载与 ReShade 共存
+## ASI 加载（D3D9）
 
-1. 退出游戏。找到真正包含 `ra3_1.12.game` 的 `Data` 目录。
-2. 下载 **Ultimate ASI Loader v9.7.4 的 Win32 版本**。取其中 loader DLL，重命名为 `winmm.dll`，放到该 `Data` 目录。不要使用 `_x64` 包。
-3. 将 `dist/Release/scripts/RA3InputBridge.asi` 放到 `Data/scripts/RA3InputBridge.asi`。
-4. 将 `config/global.ini.example` 的配置合并到 `Data/global.ini`；已有配置时手工合并，不要覆盖其他设置。`DontLoadFromDllMain=1` 使 UAL 在其延迟加载路径调用 `InitializeASI`。
-5. 启动游戏，查看 `Data/scripts/RA3InputBridge.log`。成功时有 `Ready: \\.\pipe\RA3MCP.<PID>`。
+1. 退出游戏和启动器。Steam 启动选项使用 `-runver 1.12 -win -xres 1920 -yres 1080`，确认实际进程为 `Data/ra3_1.12.game`；桥接仍会核对文件哈希。
+2. 使用用户已确认游戏会加载 `d3d9.dll` 的目录作为「加载目录」。以下配置与 `scripts` 均放在这个目录旁边；不要把 loader 与插件分到两个不同的加载目录。
+3. 将先前为本项目部署的 UAL `winmm.dll` 移到游戏目录外保存。若加载目录已有 `d3d9.dll` 或 `d3d9Hooked.dll`，也先移出保存；本方案不与 ReShade 共存。
+4. 把 `downloads/ual-win32/d3d9.dll` 复制到加载目录。它是已校验的 UAL v9.7.4 Win32 loader，包内原名为 `dinput8.dll`；不需要重新下载或编译。
+5. **手动创建**加载目录下的 `scripts` 文件夹，将 `dist/Release/scripts/RA3InputBridge.asi` 放进去。游戏和 UAL 不会为部署自动创建这个文件夹。
+6. 将 `config/global.ini.example` 的配置合并到加载目录的 `global.ini`；没有该文件时复制并去掉 `.example` 后缀。`DontLoadFromDllMain=1` 使 UAL 在其延迟加载路径调用 `InitializeASI`。
+7. 启动游戏，查看加载目录的 `scripts/RA3InputBridge.log`。成功时有 `Ready: \\.\pipe\RA3MCP.<PID>`。没有日志时还需检查进程模块、命名管道和日志目录写权限，不能仅凭日志缺失认定 DLL 未加载。
 
-ReShade 的 `d3d9.dll` 可以留在原处。所选加载路径使用游戏已有的 `winmm.dll` 导入，不占用 `d3d9.dll`。如果目标目录已有 `winmm.dll`，先检查其来源并备份，暂不覆盖；需要另行决定链式加载方式。加载器的实际搜索路径与 ReShade 共存效果仍待本机验证。
+例如加载目录确定为游戏 `Data` 时，部署布局为：
+
+| 文件 | 游戏内位置 |
+| --- | --- |
+| UAL loader | `Data/d3d9.dll` |
+| UAL 配置 | `Data/global.ini` |
+| 桥接插件 | `Data/scripts/RA3InputBridge.asi` |
+| 运行时日志 | `Data/scripts/RA3InputBridge.log` |
+
+D3D9 在本版只负责把 ASI 加载进游戏。桥接的鼠标输入仍通过游戏原生输入泵与队列转发。UAL 源码与 PE 导出表已静态确认支持 D3D9；这台机器上的完整加载链仍需游戏内实测。
 
 ASI 通过 `InitializeASI` 启动工作线程，`DllMain` 不安装 hook。模块初始化后固定驻留至进程退出；**首版没有热卸载**，替换插件前退出游戏。卸载时移走新增加的 ASI/loader，按备份恢复已有文件。
 

@@ -44,7 +44,7 @@ try {
     }
 
     $destination = Join-Path $repo 'third_party/minhook'
-    $loaderDestination = Join-Path $repo 'downloads/ual-win32/winmm.dll'
+    $loaderDestination = Join-Path $repo 'downloads/ual-win32/d3d9.dll'
     # Refuse to overwrite a different dependency or a locally modified source tree.
     if (Test-Path -LiteralPath $destination) {
         foreach ($file in Get-ChildItem -LiteralPath $source -File -Recurse -Force) {
