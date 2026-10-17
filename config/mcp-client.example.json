@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ra3": {
+      "command": "C:\\STanJK\\Development\\RA3MCP\\target\\release\\ra3ctl.exe",
+      "args": [
+        "mcp",
+        "--transport",
+        "stdio"
+      ],
+      "cwd": "C:\\STanJK\\Development\\RA3MCP"
+    }
+  }
+}

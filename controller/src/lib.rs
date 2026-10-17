@@ -1,6 +1,8 @@
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::thread;
+mod json;
+mod pipe;
+pub mod mcp;
+use std::io;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 pub const MAGIC: u32 = 0x504d3352;
@@ -74,64 +76,72 @@ impl Ack {
     }
 }
 
-pub struct Session { pipe: File, next_sequence: u32 }
+pub struct Session { pipe: pipe::Pipe, next_sequence: u32, poisoned: bool }
 impl Session {
     pub fn connect(pid: u32) -> io::Result<Self> {
-        if pid == 0 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "PID must be nonzero")); }
-        if !cfg!(windows) { return Err(io::Error::new(io::ErrorKind::Unsupported, "the game pipe requires Windows")); }
-        let path = format!(r"\\.\pipe\RA3MCP.{pid}");
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            match OpenOptions::new().read(true).write(true).open(&path) {
-                Ok(pipe) => return Ok(Self { pipe, next_sequence: 1 }),
-                Err(e) if matches!(e.raw_os_error(), Some(2) | Some(231)) && Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(25));
-                }
-                Err(e) => return Err(io::Error::new(e.kind(), format!("cannot open {path}: {e}; check bridge log and game PID"))),
-            }
-        }
+        Self::connect_cancellable(pid, &AtomicBool::new(false))
+    }
+    pub(crate) fn connect_cancellable(pid: u32, cancel: &AtomicBool) -> io::Result<Self> {
+        Ok(Self { pipe: pipe::Pipe::connect(pid, cancel)?, next_sequence: 1, poisoned: false })
     }
     pub fn send(&mut self, command: Command) -> io::Result<Ack> {
+        self.send_cancellable(command, &AtomicBool::new(false))
+    }
+    pub(crate) fn send_cancellable(&mut self, command: Command, cancel: &AtomicBool) -> io::Result<Ack> {
+        if self.poisoned { return Err(io::Error::new(io::ErrorKind::BrokenPipe, "session failed; close it before reconnecting")); }
+        pipe::check_cancel(cancel)?;
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
-        self.pipe.write_all(&command.encode(sequence))?;
-        let mut reply = [0; PACKET_SIZE];
-        self.pipe.read_exact(&mut reply)?;
-        Ack::decode(&reply, sequence)?.check()
+        let result = (|| {
+            self.pipe.write(&command.encode(sequence), cancel)?;
+            let mut reply = [0; PACKET_SIZE];
+            self.pipe.read(&mut reply, cancel)?;
+            Ack::decode(&reply, sequence)?.check()
+        })();
+        if result.is_err() { self.poisoned = true; }
+        result
     }
     pub fn release_all(&mut self) -> io::Result<Ack> {
         self.send(Command::at(Op::ReleaseAll, 0, 0, 0))
     }
     pub fn click(&mut self, button: u8, x: i32, y: i32, hold: Duration) -> io::Result<Ack> {
+        self.click_cancellable(button, x, y, hold, &AtomicBool::new(false))
+    }
+    pub(crate) fn click_cancellable(&mut self, button: u8, x: i32, y: i32, hold: Duration,
+                                    cancel: &AtomicBool) -> io::Result<Ack> {
         let result = (|| {
-            self.send(Command::at(Op::Move, 0, x, y))?;
-            self.send(Command::at(Op::Down, button, x, y))?;
-            thread::sleep(hold);
-            self.send(Command::at(Op::Up, button, x, y))
+            self.send_cancellable(Command::at(Op::Move, 0, x, y), cancel)?;
+            self.send_cancellable(Command::at(Op::Down, button, x, y), cancel)?;
+            pipe::wait_until(Instant::now() + hold, cancel)?;
+            self.send_cancellable(Command::at(Op::Up, button, x, y), cancel)
         })();
-        if result.is_err() { let _ = self.release_all(); }
+        if result.is_err() { self.poisoned = true; } // Owner closes; native bridge requests release on disconnect.
         result
     }
     pub fn drag(&mut self, button: u8, start: (i32, i32), end: (i32, i32),
                 duration: Duration, steps: u32) -> io::Result<Ack> {
+        self.drag_cancellable(button, start, end, duration, steps, &AtomicBool::new(false))
+    }
+    pub(crate) fn drag_cancellable(&mut self, button: u8, start: (i32, i32), end: (i32, i32),
+                duration: Duration, steps: u32, cancel: &AtomicBool) -> io::Result<Ack> {
         if steps == 0 || steps > 1000 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "drag steps must be 1..1000"));
         }
         let result = (|| {
-            self.send(Command::at(Op::Move, 0, start.0, start.1))?;
-            self.send(Command::at(Op::Down, button, start.0, start.1))?;
+            self.send_cancellable(Command::at(Op::Move, 0, start.0, start.1), cancel)?;
+            self.send_cancellable(Command::at(Op::Down, button, start.0, start.1), cancel)?;
             let began = Instant::now();
             for step in 1..=steps {
                 // Each exchange waits for a game pump, so down/move/up cannot collapse
                 // into one frame. Frame rate can extend the requested duration.
                 let due = began + duration.mul_f64(f64::from(step) / f64::from(steps));
-                if let Some(delay) = due.checked_duration_since(Instant::now()) { thread::sleep(delay); }
+                pipe::wait_until(due, cancel)?;
                 let point = interpolate(start, end, step, steps);
-                self.send(Command::at(Op::Move, 0, point.0, point.1))?;
+                self.send_cancellable(Command::at(Op::Move, 0, point.0, point.1), cancel)?;
             }
-            self.send(Command::at(Op::Up, button, end.0, end.1))
+            self.send_cancellable(Command::at(Op::Up, button, end.0, end.1), cancel)
         })();
-        if result.is_err() { let _ = self.release_all(); }
+        if result.is_err() { self.poisoned = true; }
         result
     }
 }

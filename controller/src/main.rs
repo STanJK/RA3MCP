@@ -3,7 +3,8 @@ use std::env;
 use std::io;
 use std::time::Duration;
 
-const HELP: &str = "ra3ctl --pid <game PID> <command>
+const HELP: &str = "ra3ctl mcp [--transport stdio]  (resident MCP server; no startup game action)
+ra3ctl --pid <game PID> <command>
   ping
   move <x> <y>
   click <left|right|middle> <x> <y> [hold_ms=80]
@@ -32,6 +33,12 @@ fn millis(args: &[String], index: usize, default: i32) -> io::Result<Duration> {
 fn run() -> io::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h" | "help") { print!("{HELP}"); return Ok(()); }
+    if args[0] == "mcp" {
+        if args.len() == 1 || (args.len() == 3 && args[1] == "--transport" && args[2] == "stdio") {
+            return ra3ctl::mcp::run_stdio();
+        }
+        return Err(bad("usage: ra3ctl mcp [--transport stdio]"));
+    }
     if args.len() < 3 || args[0] != "--pid" { return Err(bad(HELP)); }
     let pid = args[1].parse::<u32>().map_err(|_| bad("invalid PID"))?;
     // Validate all arguments before opening a pipe or pressing a button.

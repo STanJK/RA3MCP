@@ -1,8 +1,8 @@
 [package]
 name = "ra3ctl"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "External RA3 mouse controller over a local named pipe"
+description = "Resident stdio MCP server and CLI for the verified RA3 input bridge"
 
 [dependencies]

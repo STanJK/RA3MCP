@@ -1,0 +1,890 @@
+[
+  {
+    "name": "ra3_click",
+    "description": "Click a mouse button through the verified game input pump. No focus delay. Never automatically retry after an error, timeout or cancellation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "button": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ],
+          "default": "left"
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "hold_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "default": 80
+        }
+      },
+      "required": [
+        "pid",
+        "x",
+        "y"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pumped"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "pump": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "held": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "detail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "idempotentHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "ra3_disconnect",
+    "description": "Close this server's cached pipe for the explicit PID. Does not stop the game or unload the ASI. The bridge requests button release on its next pump. Releases exclusive ownership for CLI/other clients.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "disconnected": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "idempotentHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "ra3_drag",
+    "description": "Drag while holding a mouse button, using separate game-pump acknowledgements for samples. Low FPS can extend duration. No focus delay. Never automatically retry after an error, timeout or cancellation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "button": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ],
+          "default": "left"
+        },
+        "x0": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "y0": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "x1": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "y1": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "default": 400
+        },
+        "steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 20
+        }
+      },
+      "required": [
+        "pid",
+        "x0",
+        "y0",
+        "x1",
+        "y1"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pumped"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "pump": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "held": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "detail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "idempotentHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "ra3_list_instances",
+    "description": "List local RA3MCP named-pipe endpoints without connecting to them. Pipe presence does not prove the input pump is responding; test a chosen explicit PID with ra3_ping.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pid": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4294967295,
+                "description": "Explicit game PID from a bridge endpoint; required on every game call."
+              },
+              "pipe": {
+                "type": "string"
+              },
+              "connected": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pid",
+              "pipe",
+              "connected"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "note": {
+          "type": "string"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "idempotentHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "ra3_move",
+    "description": "Queue mouse movement in game client pixels. Does not guarantee movement of the Windows system cursor. No focus delay; physical input can override game input.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        }
+      },
+      "required": [
+        "pid",
+        "x",
+        "y"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pumped"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "pump": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "held": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "detail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "idempotentHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "ra3_ping",
+    "description": "Open or reuse the exclusive bridge pipe for this PID and wait for a game-pump acknowledgement. The connection remains cached until disconnect, an error, or server shutdown. Does not click or move.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pumped"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "pump": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "held": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "detail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "idempotentHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "ra3_release",
+    "description": "Release only mouse buttons held by this bridge and wait for a game-pump acknowledgement.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        }
+      },
+      "required": [
+        "pid"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pumped"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "pump": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "held": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "detail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "idempotentHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "ra3_wheel",
+    "description": "Send nonzero signed wheel ticks at game client coordinates. Positive/negative ticks are passed to the native queue. No focus delay. Never automatically retry on uncertain outcomes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Game client pixels, excluding window borders; bridge checks the actual client size."
+        },
+        "ticks": {
+          "type": "integer",
+          "minimum": -100,
+          "maximum": 100,
+          "not": {
+            "const": 0
+          }
+        }
+      },
+      "required": [
+        "pid",
+        "x",
+        "y",
+        "ticks"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "description": "Explicit game PID from a bridge endpoint; required on every game call."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pumped"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "pump": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "held": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "detail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "not_sent",
+                "unknown"
+              ]
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "os_error": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "outcome",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "idempotentHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
+  }
+]
