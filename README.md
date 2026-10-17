@@ -24,7 +24,7 @@ $gamePid = (Get-CimInstance Win32_Process -Filter "Name='ra3_1.12.game'").Proces
 .\target\release\ra3ctl.exe --pid $gamePid probe
 ```
 
-默认生成 `dumps/ra3-ai-probe-<PID>-<UTC>-g<generation>.json`。可用 `probe --output <file>` 指定文件，已有文件不会被覆盖。v3 JSON 固定分为 `rough_snapshot` 和 `raw_data`：前者把 Personality、战略/预算/建造状态、战略指令、预算账户和战术类翻译成稳定名称；后者保留地址、AssetId、float bits、vector 边界、目标记录和战术对象原始字。完整字段和二进制协议见 [AI Probe](docs/AI_PROBE.md)。
+默认生成 `dumps/ra3-ai-probe-<PID>-<UTC>-g<generation>.json`。可用 `probe --output <file>` 指定文件，已有文件不会被覆盖。v3 JSON 固定分为 `rough_snapshot` 和 `raw_data`：前者把 Personality、战略/预算/建造状态、战略指令、预算账户和战术类翻译成稳定名称；后者保留地址、AssetId、float bits、vector 边界、目标记录和战术对象原始字。完整字段和二进制协议见 [AI Probe](docs/AI_PROBE.md)。原生 setter、预算/战略/目标/战术生命周期、安全写入分级和候选命令队列设计见 [AI 控制面研究](docs/AI_CONTROL.md)；这些写接口尚未在当前版本开放。
 
 ## 本机准备与构建
 
