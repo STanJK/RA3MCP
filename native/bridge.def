@@ -1,3 +1,3 @@
 LIBRARY RA3InputBridge
 EXPORTS
-    InitializeASI=_InitializeASI
+    InitializeASI
