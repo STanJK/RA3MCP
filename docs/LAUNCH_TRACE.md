@@ -6,6 +6,8 @@
 
 2026-10-17 的桥接日志显示根目录 ASI 进入了 `runme.exe`（PID 37980）和 `RA3.exe`（PID 39656），还没有 `.game` 的初始化记录。因此，根目录部署目前只证实了启动器加载；不能由此认定游戏子进程也加载了代理。
 
+用户确认 `runme.exe` 是 Steam 的代理入口；本轮手动跟踪从游戏根目录的 `RA3.exe` 开始，传入 `-win -xres 1920 -yres 1080 -runver 1.12`。已提供的启动命令显示 `Data/RA3_1.12.game` 收到窗口参数和 `-config "<游戏根目录>/RA3_English_1.12.SkuDef"`；实际父子关系和 DLL 路径仍由跟踪日志确认。
+
 跟踪目标是逐个回答：实际创建了哪些进程、它们的父 PID 是谁、`.game` 从哪里启动、每个进程加载的 `winmm.dll` / `d3d9.dll` 是本地还是系统文件，以及 `RA3InputBridge.asi` 是否映射进 `.game`。
 
 ## 构建
@@ -26,10 +28,10 @@ cd C:\STanJK\Development\RA3MCP
 .\target\release\ra3trace.exe `
     --exe 'C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3\RA3.exe' `
     --seconds 90 `
-    -- -runver 1.12 -win -xres 1920 -yres 1080
+    -- -win -xres 1920 -yres 1080 -runver 1.12
 ```
 
-如果正常启动链的最外层入口是 `runme.exe`，将 `--exe` 换成同一目录下的 `runme.exe`；`--` 后面的参数原样传给选定入口。工作目录设置为该入口所在目录。
+本轮 `--exe` 固定选择 `RA3.exe`。`--` 后面的参数原样传给它，工作目录设置为游戏根目录，由启动器选择 1.12 版本并传入 SkuDef。跟踪器无需改动或重新编译。
 
 默认 JSONL 保存到 `ra3trace.exe` 旁边的 `logs/ra3trace-<时间>-<跟踪器PID>.jsonl`，启动时会显示完整位置。也可通过 `--out 'D:\traces\ra3-startup.jsonl'` 指定一个尚不存在的文件，已有文件会拒绝覆盖。
 
