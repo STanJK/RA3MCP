@@ -74,6 +74,37 @@ impl Json {
                 format!("{}:{}", Self::String(k.clone()).encode(), v.encode())).collect::<Vec<_>>().join(",")),
         }
     }
+    pub fn encode_pretty(&self) -> String {
+        fn render(value: &Json, depth: usize, out: &mut String) {
+            match value {
+                Json::Array(values) if !values.is_empty() => {
+                    out.push_str("[\n");
+                    for (index, value) in values.iter().enumerate() {
+                        out.push_str(&"  ".repeat(depth + 1));
+                        render(value, depth + 1, out);
+                        if index + 1 != values.len() { out.push(','); }
+                        out.push('\n');
+                    }
+                    out.push_str(&"  ".repeat(depth)); out.push(']');
+                }
+                Json::Object(values) if !values.is_empty() => {
+                    out.push_str("{\n");
+                    for (index, (key, value)) in values.iter().enumerate() {
+                        out.push_str(&"  ".repeat(depth + 1));
+                        out.push_str(&Json::String(key.clone()).encode()); out.push_str(": ");
+                        render(value, depth + 1, out);
+                        if index + 1 != values.len() { out.push(','); }
+                        out.push('\n');
+                    }
+                    out.push_str(&"  ".repeat(depth)); out.push('}');
+                }
+                _ => out.push_str(&value.encode()),
+            }
+        }
+        let mut out = String::new();
+        render(self, 0, &mut out);
+        out
+    }
 }
 impl From<&str> for Json { fn from(v: &str) -> Self { Self::String(v.into()) } }
 impl From<String> for Json { fn from(v: String) -> Self { Self::String(v) } }
@@ -211,6 +242,7 @@ mod tests {
     fn unicode_escapes_numbers_and_roundtrip() {
         let value = parse(r#"{"路径":["\ud83d\ude80",null,true,-1.25e+2,9007199254740993,"\u0000\n\"\\"]}"#).unwrap();
         assert_eq!(parse(&value.encode()).unwrap(), value);
+        assert_eq!(parse(&value.encode_pretty()).unwrap(), value);
         assert!(value.encode().contains("🚀"));
         assert!(value.encode().contains("9007199254740993"));
     }

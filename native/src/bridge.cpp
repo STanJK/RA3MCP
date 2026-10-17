@@ -2,6 +2,7 @@
 #include <bcrypt.h>
 #include <mmsystem.h>
 #include <MinHook.h>
+#include "ai_plane_protocol.hpp"
 #include "protocol.hpp"
 #include "work_queue.hpp"
 #include <array>
@@ -23,12 +24,16 @@ constexpr uintptr_t kDownRva = 0x8B0450 - kIdaBase;
 constexpr uintptr_t kUpRva = 0x8B04C0 - kIdaBase;
 constexpr uintptr_t kWheelRva = 0x8B0530 - kIdaBase;
 constexpr uintptr_t kWindowRva = 0xCD5C10 - kIdaBase;
+constexpr uintptr_t kSkirmishUpdateRva = 0x909A90 - kIdaBase;
+constexpr uintptr_t kGameLogicGlobalRva = 0xCDDE84 - kIdaBase;
 constexpr char kSha256[] = "dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0";
 using Pump = int (__thiscall*)(void*);
+using SkirmishUpdate = int (__thiscall*)(void*);
 using Move = int (__thiscall*)(void*, int, int, uint32_t);
 using Button = int (__thiscall*)(void*, int, int, int, uint32_t);
 using Wheel = int (__thiscall*)(void*, int, int, int);
-Pump g_original = nullptr;
+Pump g_originalPump = nullptr;
+SkirmishUpdate g_originalSkirmishUpdate = nullptr;
 Move g_move = nullptr;
 Button g_down = nullptr, g_up = nullptr;
 Wheel g_wheel = nullptr;
@@ -38,6 +43,11 @@ std::atomic<bool> g_started{false}, g_releaseRequested{false};
 std::atomic<uint32_t> g_pump{0};
 std::atomic<uint8_t> g_held{0};
 int g_x = 0, g_y = 0; // Only the game input thread touches these coordinates.
+
+std::mutex g_planeMutex;
+ra3::ai::PlaneSnapshot g_plane;
+std::atomic<uint32_t> g_planeCaptureSequence{0};
+std::atomic<uint32_t> g_planeSkippedCaptures{0};
 
 enum class Phase { Queued, Executing, Done, Cancelled };
 struct Request {
@@ -156,8 +166,167 @@ bool checkExecutable(const std::wstring& path) {
     if(std::string(result.data()) != kSha256) {
         log("Refused: host executable SHA-256 does not match the verified ra3_1.12.game."); return false;
     }
-    log("Verified game executable; installing the input pump hook.");
+    log("Verified game executable; installing input and AI data-plane hooks.");
     return true;
+}
+
+constexpr uint32_t kAgentSelfReadable = 1u << 0;
+constexpr uint32_t kAgentGameClockReadable = 1u << 1;
+constexpr uint32_t kAgentStateVectorValid = 1u << 2;
+constexpr uint32_t kAgentStateVectorTruncated = 1u << 3;
+constexpr uint32_t kAgentPersonalityReadable = 1u << 4;
+constexpr uint32_t kAgentStrategyManagerReadable = 1u << 5;
+
+uint64_t unixMilliseconds() {
+    FILETIME time{};
+    GetSystemTimeAsFileTime(&time);
+    ULARGE_INTEGER value{};
+    value.LowPart = time.dwLowDateTime;
+    value.HighPart = time.dwHighDateTime;
+    constexpr uint64_t kWindowsToUnix100ns = 116444736000000000ULL;
+    return value.QuadPart >= kWindowsToUnix100ns ? (value.QuadPart - kWindowsToUnix100ns) / 10000ULL : 0;
+}
+
+bool readableRange(uintptr_t address, size_t size) {
+    if(!address || !size || address + size < address) return false;
+    const uintptr_t end = address + size;
+    while(address < end) {
+        MEMORY_BASIC_INFORMATION information{};
+        if(!VirtualQuery(reinterpret_cast<const void*>(address), &information, sizeof(information)) ||
+           information.State != MEM_COMMIT || information.Protect & (PAGE_GUARD | PAGE_NOACCESS)) {
+            return false;
+        }
+        const DWORD protection = information.Protect & 0xff;
+        if(protection != PAGE_READONLY && protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
+           protection != PAGE_EXECUTE_READ && protection != PAGE_EXECUTE_READWRITE &&
+           protection != PAGE_EXECUTE_WRITECOPY) {
+            return false;
+        }
+        const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(information.BaseAddress) + information.RegionSize;
+        if(regionEnd <= address) return false;
+        address = regionEnd;
+    }
+    return true;
+}
+
+template<class T> T loadAt(uintptr_t address) {
+    T value{};
+    std::memcpy(&value, reinterpret_cast<const void*>(address), sizeof(value));
+    return value;
+}
+
+ra3::ai::AgentSnapshot captureAgent(void* selfPointer) {
+    ra3::ai::AgentSnapshot snapshot{};
+    const uintptr_t self = reinterpret_cast<uintptr_t>(selfPointer);
+    snapshot.captureSequence = g_planeCaptureSequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    snapshot.capturedUnixMs = unixMilliseconds();
+    snapshot.skirmishAi = uint32_t(self);
+    if(!readableRange(self, 0x914)) return snapshot;
+
+    snapshot.flags |= kAgentSelfReadable;
+    snapshot.bank = uint32_t(self + 0x004);
+    snapshot.buildManager = uint32_t(self + 0x104);
+    snapshot.buildStateManager = uint32_t(self + 0x108);
+    snapshot.strategicStateManager = uint32_t(self + 0x6DC);
+    snapshot.economyManager = uint32_t(self + 0x6FC);
+    snapshot.strategyManager = loadAt<uint32_t>(self + 0x6F8);
+    snapshot.player = loadAt<uint32_t>(self + 0x8A8);
+    snapshot.armyDefinition = loadAt<uint32_t>(self + 0x8AC);
+    snapshot.personalityRef = loadAt<uint32_t>(self + 0x8B0);
+    snapshot.disabled = loadAt<uint8_t>(self + 0x8B4);
+    snapshot.lastUpdateFrame = loadAt<uint32_t>(self + 0x8C0);
+    snapshot.timer = loadAt<int32_t>(self + 0x8CC);
+    snapshot.strategicDirective = loadAt<int32_t>(self + 0x8EC);
+    snapshot.stateNextEvaluationFrame = loadAt<uint32_t>(self + 0x6F4);
+
+    const uintptr_t gameLogicGlobal = g_base + kGameLogicGlobalRva;
+    if(readableRange(gameLogicGlobal, sizeof(uint32_t))) {
+        const uintptr_t gameLogic = loadAt<uint32_t>(gameLogicGlobal);
+        if(readableRange(gameLogic, 0x54)) {
+            snapshot.gameFrame = loadAt<uint32_t>(gameLogic + 0x50);
+            snapshot.flags |= kAgentGameClockReadable;
+        }
+    }
+
+    const uintptr_t personalityRef = snapshot.personalityRef;
+    if(readableRange(personalityRef, sizeof(uint32_t))) {
+        const uintptr_t definition = loadAt<uint32_t>(personalityRef);
+        snapshot.personalityDefinition = uint32_t(definition);
+        if(readableRange(definition, 0x16C)) {
+            snapshot.flags |= kAgentPersonalityReadable;
+            snapshot.personalityUpdateIntervalBits = loadAt<uint32_t>(definition + 0xE4);
+            snapshot.compatibleFactionCount = loadAt<uint32_t>(definition + 0xEC);
+            snapshot.compatibleFactions = loadAt<uint32_t>(definition + 0xF0);
+            snapshot.weightedStructureCount = loadAt<uint32_t>(definition + 0x144);
+            snapshot.weightedStructures = loadAt<uint32_t>(definition + 0x148);
+            snapshot.strategicDefinitionCount = loadAt<uint32_t>(definition + 0x154);
+            snapshot.strategicDefinitions = loadAt<uint32_t>(definition + 0x158);
+            snapshot.budgetDefinitionCount = loadAt<uint32_t>(definition + 0x15C);
+            snapshot.budgetDefinitions = loadAt<uint32_t>(definition + 0x160);
+            snapshot.buildDefinitionCount = loadAt<uint32_t>(definition + 0x164);
+            snapshot.buildDefinitions = loadAt<uint32_t>(definition + 0x168);
+        }
+    }
+
+    const uintptr_t strategy = snapshot.strategyManager;
+    if(readableRange(strategy, 0x1C)) {
+        snapshot.flags |= kAgentStrategyManagerReadable;
+        snapshot.strategyEnabled = loadAt<uint8_t>(strategy + 0x10);
+        snapshot.strategyInterval = loadAt<uint32_t>(strategy + 0x14);
+        snapshot.strategyNextFrame = loadAt<uint32_t>(strategy + 0x18);
+    }
+
+    const uintptr_t begin = loadAt<uint32_t>(self + 0x6E0);
+    const uintptr_t end = loadAt<uint32_t>(self + 0x6E4);
+    const uintptr_t capacityEnd = loadAt<uint32_t>(self + 0x6E8);
+    snapshot.stateBegin = uint32_t(begin);
+    snapshot.stateEnd = uint32_t(end);
+    snapshot.stateCapacityEnd = uint32_t(capacityEnd);
+    constexpr size_t kStateSize = 12;
+    const bool empty = begin == 0 && end == 0 && capacityEnd == 0;
+    if(empty || (begin && begin <= end && end <= capacityEnd &&
+                 (end - begin) % kStateSize == 0 && (capacityEnd - begin) % kStateSize == 0)) {
+        const size_t total = empty ? 0 : (end - begin) / kStateSize;
+        const size_t capacity = empty ? 0 : (capacityEnd - begin) / kStateSize;
+        const size_t copied = total < ra3::ai::kMaxStrategicStates ? total : ra3::ai::kMaxStrategicStates;
+        if(!copied || readableRange(begin, copied * kStateSize)) {
+            snapshot.flags |= kAgentStateVectorValid;
+            snapshot.stateTotalCount = uint32_t(total);
+            snapshot.stateCapacityCount = uint32_t(capacity);
+            snapshot.stateCount = uint32_t(copied);
+            if(copied < total) snapshot.flags |= kAgentStateVectorTruncated;
+            for(size_t i = 0; i < copied; ++i) {
+                const uintptr_t state = begin + i * kStateSize;
+                snapshot.states[i].definition = loadAt<uint32_t>(state);
+                snapshot.states[i].scoreBits = loadAt<uint32_t>(state + 4);
+                snapshot.states[i].flags = loadAt<uint8_t>(state + 8);
+            }
+        }
+    }
+    return snapshot;
+}
+
+void publishAgent(const ra3::ai::AgentSnapshot& snapshot) {
+    if(!g_planeMutex.try_lock()) {
+        g_planeSkippedCaptures.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    uint32_t slot = g_plane.agentCount;
+    for(uint32_t i = 0; i < g_plane.agentCount; ++i) {
+        if(g_plane.agents[i].skirmishAi == snapshot.skirmishAi) { slot = i; break; }
+    }
+    if(slot >= ra3::ai::kMaxAgents) {
+        slot = 0;
+        for(uint32_t i = 1; i < ra3::ai::kMaxAgents; ++i) {
+            if(g_plane.agents[i].captureSequence < g_plane.agents[slot].captureSequence) slot = i;
+        }
+    } else if(slot == g_plane.agentCount) {
+        ++g_plane.agentCount;
+    }
+    g_plane.agents[slot] = snapshot;
+    ++g_plane.generation;
+    g_plane.skippedCaptures = g_planeSkippedCaptures.load(std::memory_order_relaxed);
+    g_planeMutex.unlock();
 }
 
 void releaseButtons(void* mouse) {
@@ -215,7 +384,7 @@ int __fastcall hookedPump(void* self, void*) {
         if(pending[i]->phase.compare_exchange_strong(expected, Phase::Executing))
             execute(*pending[i], mouse);
     }
-    const int result = g_original(self); // The original drains the injected mouse queue.
+    const int result = g_originalPump(self); // The original drains the injected mouse queue.
     for(size_t i = 0; i < count; ++i) {
         auto& r = *pending[i];
         if(r.phase.load() != Phase::Executing) continue;
@@ -226,24 +395,36 @@ int __fastcall hookedPump(void* self, void*) {
     return result;
 }
 
-bool readPacket(HANDLE pipe, ra3::Packet& packet) {
+int __fastcall hookedSkirmishUpdate(void* self, void*) {
+    const int result = g_originalSkirmishUpdate(self);
+    // The game thread only copies verified fields into a bounded in-process plane.
+    // A contended export lock drops this sample instead of waiting.
+    publishAgent(captureAgent(self));
+    return result;
+}
+
+bool readExact(HANDLE pipe, void* bytes, size_t size) {
+    auto* data = static_cast<uint8_t*>(bytes);
     size_t offset = 0;
-    while(offset < packet.size()) {
+    while(offset < size) {
         DWORD n = 0;
-        if(!ReadFile(pipe, packet.data() + offset, static_cast<DWORD>(packet.size() - offset), &n, nullptr) || !n) return false;
+        if(!ReadFile(pipe, data + offset, static_cast<DWORD>(size - offset), &n, nullptr) || !n) return false;
         offset += n;
     }
     return true;
 }
-bool writePacket(HANDLE pipe, const ra3::Packet& packet) {
+bool writeExact(HANDLE pipe, const void* bytes, size_t size) {
+    const auto* data = static_cast<const uint8_t*>(bytes);
     size_t offset = 0;
-    while(offset < packet.size()) {
+    while(offset < size) {
         DWORD n = 0;
-        if(!WriteFile(pipe, packet.data() + offset, static_cast<DWORD>(packet.size() - offset), &n, nullptr) || !n) return false;
+        if(!WriteFile(pipe, data + offset, static_cast<DWORD>(size - offset), &n, nullptr) || !n) return false;
         offset += n;
     }
     return true;
 }
+bool readPacket(HANDLE pipe, ra3::Packet& packet) { return readExact(pipe, packet.data(), packet.size()); }
+bool writePacket(HANDLE pipe, const ra3::Packet& packet) { return writeExact(pipe, packet.data(), packet.size()); }
 ra3::Packet dispatch(const ra3::Packet& packet) {
     ra3::Command command;
     const auto sequence = ra3::read32(packet.data() + 8);
@@ -267,6 +448,50 @@ ra3::Packet dispatch(const ra3::Packet& packet) {
     g_releaseRequested.store(true, std::memory_order_release);
     return failure(ra3::Status::Timeout, wait == WAIT_FAILED ? GetLastError() : (cancelled ? 1u : 2u));
 }
+
+std::vector<uint8_t> planeDispatch(const ra3::ai::RequestPacket& packet) {
+    ra3::ai::Request request{};
+    const uint32_t sequence = ra3::ai::read32(packet.data() + 8);
+    if(!ra3::ai::decodeRequest(packet, request)) {
+        ra3::ai::PlaneSnapshot empty{};
+        empty.exportedUnixMs = unixMilliseconds();
+        return ra3::ai::encodeResponse(empty, sequence, ra3::ai::Status::Invalid);
+    }
+    ra3::ai::PlaneSnapshot snapshot{};
+    {
+        std::lock_guard<std::mutex> guard(g_planeMutex);
+        snapshot = g_plane;
+    }
+    snapshot.skippedCaptures = g_planeSkippedCaptures.load(std::memory_order_relaxed);
+    snapshot.exportedUnixMs = unixMilliseconds();
+    const auto status = snapshot.agentCount ? ra3::ai::Status::Ok : ra3::ai::Status::NotReady;
+    return ra3::ai::encodeResponse(snapshot, request.sequence, status);
+}
+
+DWORD WINAPI servePlane(void*) {
+    const std::wstring name = L"\\\\.\\pipe\\RA3MCP.AI." + std::to_wstring(GetCurrentProcessId());
+    char message[160]{};
+    sprintf_s(message, "AI data plane ready: \\\\.\\pipe\\RA3MCP.AI.%lu (snapshot protocol v1)",
+              GetCurrentProcessId());
+    bool announced = false;
+    for(;;) {
+        HANDLE pipe = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1, 65536, 4096, 0, nullptr);
+        if(pipe == INVALID_HANDLE_VALUE) { log("AI data-plane pipe creation failed; restart the game."); return 1; }
+        if(!announced) { log(message); announced = true; }
+        if(ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
+            ra3::ai::RequestPacket packet{};
+            while(readExact(pipe, packet.data(), packet.size())) {
+                const auto response = planeDispatch(packet);
+                if(!writeExact(pipe, response.data(), response.size())) break;
+            }
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    }
+}
+
 void serve() {
     const std::wstring name = L"\\\\.\\pipe\\RA3MCP." + std::to_wstring(GetCurrentProcessId());
     char message[128]{};
@@ -316,14 +541,30 @@ DWORD WINAPI bootstrap(void*) {
         g_down = reinterpret_cast<Button>(g_base + kDownRva);
         g_up = reinterpret_cast<Button>(g_base + kUpRva);
         g_wheel = reinterpret_cast<Wheel>(g_base + kWheelRva);
-        auto target = reinterpret_cast<LPVOID>(g_base + kPumpRva);
+        auto pumpTarget = reinterpret_cast<LPVOID>(g_base + kPumpRva);
+        auto skirmishTarget = reinterpret_cast<LPVOID>(g_base + kSkirmishUpdateRva);
         if(MH_Initialize() != MH_OK) { log("MinHook initialization failed."); return 2; }
-        if(MH_CreateHook(target, reinterpret_cast<LPVOID>(&hookedPump), reinterpret_cast<LPVOID*>(&g_original)) != MH_OK) {
+        if(MH_CreateHook(pumpTarget, reinterpret_cast<LPVOID>(&hookedPump),
+                         reinterpret_cast<LPVOID*>(&g_originalPump)) != MH_OK) {
             log("Input pump hook creation failed."); MH_Uninitialize(); return 3;
         }
-        if(MH_EnableHook(target) != MH_OK) {
-            log("Input pump hook enable failed."); MH_RemoveHook(target); MH_Uninitialize(); return 4;
+        if(MH_CreateHook(skirmishTarget, reinterpret_cast<LPVOID>(&hookedSkirmishUpdate),
+                         reinterpret_cast<LPVOID*>(&g_originalSkirmishUpdate)) != MH_OK) {
+            log("AI data-plane hook creation failed.");
+            MH_RemoveHook(pumpTarget); MH_Uninitialize(); return 4;
         }
+        if(MH_EnableHook(pumpTarget) != MH_OK) {
+            log("Input pump hook enable failed.");
+            MH_RemoveHook(skirmishTarget); MH_RemoveHook(pumpTarget); MH_Uninitialize(); return 5;
+        }
+        if(MH_EnableHook(skirmishTarget) != MH_OK) {
+            log("AI data-plane hook enable failed.");
+            MH_DisableHook(pumpTarget); MH_RemoveHook(skirmishTarget); MH_RemoveHook(pumpTarget);
+            MH_Uninitialize(); return 6;
+        }
+        HANDLE planeThread = CreateThread(nullptr, 0, &servePlane, nullptr, 0, nullptr);
+        if(planeThread) CloseHandle(planeThread);
+        else log("AI data-plane worker creation failed; mouse input bridge remains available.");
         // Resident until process exit. Even a later pipe failure must not unmap the hook.
         serve();
     } catch(...) { log("Bridge worker failed; restart the game before retrying."); }

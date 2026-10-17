@@ -25,13 +25,18 @@ pub(crate) struct Pipe {
 }
 impl Pipe {
     pub fn connect(pid: u32, cancel: &AtomicBool) -> io::Result<Self> {
+        Self::connect_path(pid, format!(r"\\.\pipe\RA3MCP.{pid}"), "game input", cancel)
+    }
+    pub(crate) fn connect_ai(pid: u32, cancel: &AtomicBool) -> io::Result<Self> {
+        Self::connect_path(pid, format!(r"\\.\pipe\RA3MCP.AI.{pid}"), "AI data plane", cancel)
+    }
+    fn connect_path(pid: u32, path: String, purpose: &str, cancel: &AtomicBool) -> io::Result<Self> {
         if pid == 0 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "PID must be nonzero")); }
         #[cfg(not(windows))]
-        { let _ = cancel; Err(io::Error::new(io::ErrorKind::Unsupported, "the game pipe requires Windows")) }
+        { let _ = (path, purpose, cancel); Err(io::Error::new(io::ErrorKind::Unsupported, "the game pipe requires Windows")) }
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
-            let path = format!(r"\\.\pipe\RA3MCP.{pid}");
             let deadline = Instant::now() + Duration::from_secs(3);
             loop {
                 check_cancel(cancel)?;
@@ -41,7 +46,7 @@ impl Pipe {
                         thread::sleep(Duration::from_millis(25));
                     }
                     Err(error) => return Err(io::Error::new(error.kind(),
-                        format!("cannot open {path}: {error}; check bridge log, PID, and exclusive pipe ownership"))),
+                        format!("cannot open {purpose} pipe {path}: {error}; check bridge log, PID, and exclusive pipe ownership"))),
                 }
             }
         }

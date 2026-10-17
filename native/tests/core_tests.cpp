@@ -1,3 +1,4 @@
+#include "ai_plane_protocol.hpp"
 #include "protocol.hpp"
 #include "work_queue.hpp"
 #include <cstdlib>
@@ -26,5 +27,22 @@ int main() {
     check(q.push(a)); check(q.push(b)); check(!q.push(a));
     std::shared_ptr<int> v; check(q.pop(v)&&*v==7); check(q.push(a));
     check(q.pop(v)&&*v==8); check(q.pop(v)&&*v==7); check(!q.pop(v));
-    std::cout<<"protocol golden/validation and bounded FIFO tests passed\n";
+
+    const auto probeRequest=ai::encodeRequest(0x10203040);
+    ai::Request decodedProbe{};
+    check(ai::decodeRequest(probeRequest,decodedProbe));
+    check(decodedProbe.sequence==0x10203040);
+    auto invalidProbe=probeRequest; invalidProbe[12]=1; check(!ai::decodeRequest(invalidProbe,decodedProbe));
+    ai::PlaneSnapshot plane{};
+    plane.generation=7; plane.skippedCaptures=2; plane.agentCount=1; plane.exportedUnixMs=123456789;
+    auto& agent=plane.agents[0];
+    agent.skirmishAi=0x12340000; agent.captureSequence=9; agent.stateCount=1; agent.stateTotalCount=1;
+    agent.states[0]={0x76540000,0x3f000000,1};
+    const auto response=ai::encodeResponse(plane,0x10203040,ai::Status::Ok);
+    check(response.size()==ai::kResponseHeaderSize+180);
+    check(ai::read32(response.data())==ai::kMagic);
+    check(ai::read32(response.data()+8)==0x10203040);
+    check(ai::read32(response.data()+12)==180);
+    check(ai::read32(response.data()+ai::kResponseHeaderSize)==180);
+    std::cout<<"input/AI protocols, validation, and bounded FIFO tests passed\n";
 }

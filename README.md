@@ -1,6 +1,6 @@
 # RA3MCP
 
-红警 3 鼠标控制桥接：`RA3InputBridge.asi` 在游戏进程内转发输入，外部 Rust `ra3ctl.exe` 通过命名管道控制移动、点击、拖动与滚轮，同时提供原 CLI 和常驻 stdio MCP 服务。
+红警 3 控制与观测桥接：`RA3InputBridge.asi` 在游戏进程内转发鼠标输入，同时维护异步 AI data plane；外部 Rust `ra3ctl.exe` 通过命名管道控制移动、点击、拖动与滚轮，也可把最新 Skirmish AI 状态一次性导出为带时间戳的 JSON。鼠标工具同时提供原 CLI 和常驻 stdio MCP 服务；AI probe 当前只开放 CLI。
 
 **状态：本机原生构建与测试通过，用户已确认游戏加载、CLI ping、点击和拖动有效；MCP 初版通过本机检查和模拟管道集成测试，最终补充修改待本机复验与 Release 构建。** 远端只编辑源码和静态检查；本机验证命令见 [MCP 接入规范](docs/MCP_TOOLHUB.md)。Toolhub 的代码、配置和注册由专门会话负责。
 
@@ -12,6 +12,19 @@
 - 被控制和校验的进程为 `Data/ra3_1.12.game`；游戏进程的 Loader、配置和 `scripts` 位于 `Data`；当前采用已验证的根目录与 Data 双份部署，单目录初始化尝试未成功。
 
 地址、对象关系和调用约定见 [逆向记录](docs/REVERSE_ENGINEERING.md)。
+
+## AI data plane 与 probe
+
+ASI 在 `SkirmishAI::Update` 返回后，把已确认的对象字段复制到固定容量的进程内 plane。发布只尝试获取锁；若 CLI 恰好正在复制快照，本帧采样会被跳过，游戏线程不会等待。独立工作线程通过 `\\.\pipe\RA3MCP.AI.<PID>` 导出二进制快照，JSON 序列化和落盘均由外部 CLI 完成。
+
+进入包含 Skirmish AI 的对局后执行：
+
+```powershell
+$gamePid = (Get-CimInstance Win32_Process -Filter "Name='ra3_1.12.game'").ProcessId
+.\target\release\ra3ctl.exe --pid $gamePid probe
+```
+
+默认生成 `dumps/ra3-ai-probe-<PID>-<UTC>-g<generation>.json`。可用 `probe --output <file>` 指定文件，已有文件不会被覆盖。首版导出 Player、Personality、各 AI manager 地址，战略状态分数与 vector 元数据、定时器、directive、游戏帧及采集/导出时间。完整字段和二进制协议见 [AI Probe](docs/AI_PROBE.md)。
 
 ## 本机准备与构建
 

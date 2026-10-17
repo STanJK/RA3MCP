@@ -1,6 +1,7 @@
 mod json;
 mod pipe;
 pub mod mcp;
+pub mod probe;
 use std::io;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};

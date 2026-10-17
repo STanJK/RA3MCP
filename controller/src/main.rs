@@ -1,6 +1,7 @@
 use ra3ctl::{Command, Op, Session};
 use std::env;
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 const HELP: &str = "ra3ctl mcp [--transport stdio]  (resident MCP server; no startup game action)
@@ -11,7 +12,9 @@ ra3ctl --pid <game PID> <command>
   drag <left|right|middle> <x0> <y0> <x1> <y1> [duration_ms=400] [steps=20]
   wheel <x> <y> <ticks>
   release
+  probe [--output <json file>]
 Coordinates are game client pixels. Wheel ticks: -100..-1 or 1..100.
+Probe copies the latest in-process AI data plane and writes timestamped JSON without blocking the game thread.
 The bridge must be loaded in the verified ra3_1.12.game process.
 ";
 fn bad(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidInput, message) }
@@ -42,7 +45,12 @@ fn run() -> io::Result<()> {
     if args.len() < 3 || args[0] != "--pid" { return Err(bad(HELP)); }
     let pid = args[1].parse::<u32>().map_err(|_| bad("invalid PID"))?;
     // Validate all arguments before opening a pipe or pressing a button.
-    enum Action { Send(Command), Click(u8, (i32, i32), Duration), Drag(u8, (i32, i32), (i32, i32), Duration, u32) }
+    enum Action {
+        Send(Command),
+        Click(u8, (i32, i32), Duration),
+        Drag(u8, (i32, i32), (i32, i32), Duration, u32),
+        Probe(Option<PathBuf>),
+    }
     let rest = &args[3..];
     let action = match (args[2].as_str(), rest.len()) {
         ("ping", 0) => Action::Send(Command::at(Op::Ping, 0, 0, 0)),
@@ -57,13 +65,27 @@ fn run() -> io::Result<()> {
             if ticks == 0 { return Err(bad("wheel ticks cannot be zero")); }
             Action::Send(Command { op: Op::Wheel, button: 0, x: p.0, y: p.1, value: ticks })
         }
+        ("probe", 0) => Action::Probe(None),
+        ("probe", 2) if rest[0] == "--output" && !rest[1].is_empty() => Action::Probe(Some(PathBuf::from(&rest[1]))),
         _ => return Err(bad(HELP)),
+    };
+    let action = match action {
+        Action::Probe(output) => {
+            let dump = ra3ctl::probe::capture(pid)?;
+            let path = dump.write(output.as_deref())?;
+            println!("dumped agents={} generation={} captured={} skipped={} file={}",
+                dump.agents.len(), dump.generation, dump.agents.iter().map(|v| v.capture_sequence).max().unwrap_or(0),
+                dump.skipped_captures, path.display());
+            return Ok(());
+        }
+        action => action,
     };
     let mut session = Session::connect(pid)?;
     let ack = match action {
         Action::Send(c) => session.send(c)?,
         Action::Click(b, p, duration) => session.click(b, p.0, p.1, duration)?,
         Action::Drag(b, start, end, duration, steps) => session.drag(b, start, end, duration, steps)?,
+        Action::Probe(_) => unreachable!(),
     };
     println!("pumped sequence={} pump={} held={}", ack.sequence, ack.pump, ack.held);
     Ok(())

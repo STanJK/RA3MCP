@@ -1,6 +1,7 @@
 /build/
 /target/
 /dist/
+/dumps/
 /third_party/minhook/
 /downloads/
 *.log
