@@ -17,7 +17,15 @@
 
 依赖下载链接、版本与用途见 [下载清单](docs/DOWNLOADS.md)。需要 MSVC x86 C++ 工具链、Windows SDK、CMake，以及 Windows MSVC Rust 工具链。Rust 控制器可编译为 x64；ASI 必须为 x86。
 
-将 MinHook v1.3.4 源码解压、重命名为以下目录；不要求下载 MinHook 预编译库：
+将收到的两个原始 ZIP 放到仓库 `downloads/`，先在本机执行离线准备脚本：
+
+```powershell
+.\scripts\Prepare-Dependencies.ps1
+```
+
+脚本核对固定 SHA-256，把 MinHook 源码放到 `third_party/minhook`，并从 Loader 包的 `dinput8.dll` 准备 `downloads/ual-win32/winmm.dll`。它不编译、不下载，也不改游戏目录；遇到内容不同的现有文件会拒绝覆盖。ZIP 在其他位置时可传 `-MinHookZip` 和 `-LoaderZip`。
+
+也可手工将 MinHook v1.3.4 源码解压、重命名为以下目录；不要求下载 MinHook 预编译库：
 
 ```text
 RA3MCP/

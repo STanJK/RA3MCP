@@ -10,6 +10,12 @@ C:\STanJK\Development\RA3MCP
 
 ToolHub 不调用 `scripts/Build.ps1` / `Test.ps1` / `Stage.ps1` 作为编译入口，而是直接暴露底层固定工具链操作。远端只能选择已经定义好的 project + operation，不能提供 executable、argv、cwd 或 shell 文本。
 
+## 依赖准备（本机一次性操作）
+
+把 `minhook-1.3.4.zip` 和 `Ultimate-ASI-Loader-NoPDB.zip` 放入仓库 `downloads/`，在本机手动运行 `scripts/Prepare-Dependencies.ps1`。脚本校验固定 SHA-256，准备 `third_party/minhook` 与 `downloads/ual-win32/winmm.dll`，不编译、不下载、不改游戏目录。ZIP 在其他位置时可传 `-MinHookZip` 和 `-LoaderZip`。
+
+此脚本仅用于本机准备，不作为 ToolHub operation 暴露；后续编译仍使用下列固定工具链命令。
+
 ## ToolHub project
 
 建议 Local Build 项目：

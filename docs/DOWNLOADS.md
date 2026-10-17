@@ -18,7 +18,17 @@ UAL Win32 NoPDB ZIP 发布资产的 SHA-256：
 - https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/download/v9.7.4/Ultimate-ASI-Loader.zip
 - 该发布资产 SHA-256：`952cebfc30d525afc2bdbaca954329d405ded3aa688a83027354dae14dfd5c5f`。
 
-在 Windows 上可用 `Get-FileHash .\Ultimate-ASI-Loader-NoPDB.zip -Algorithm SHA256` 核对。以上是 GitHub 发布资产提供的摘要，尚未对本地下载文件另行计算。MinHook 源码 ZIP 未填写未经核验的摘要。
+在 Windows 上可用 `Get-FileHash .\Ultimate-ASI-Loader-NoPDB.zip -Algorithm SHA256` 核对。
+
+2026-10-17 收到的两个 ZIP 已进行静态校验：
+
+| 内容 | 实测 SHA-256 / 架构 |
+| --- | --- |
+| `minhook-1.3.4.zip` | `172708123daa0c98d20d3a980b16a50be14af243dc95dee6f79c24193ad010e4`，编译所需源码和许可证齐全。 |
+| `Ultimate-ASI-Loader-NoPDB.zip` | `14b3a1ad018899571ac9aa01482977f3c6d49e6cba99f552d01c5acacd1315e1`，与上述发布资产摘要一致。 |
+| 包内 `dinput8.dll` | `ec2f4824eca58dd40f425756a4a7cec77b8e381f21d11d7c846ec4b339b617ab`，PE Machine `0x014c`（x86）。 |
+
+把这两个原始 ZIP 放进 `downloads/` 后，本机执行 `scripts/Prepare-Dependencies.ps1` 即可校验并准备依赖。Loader 会另存为 `downloads/ual-win32/winmm.dll`，原始 ZIP 保留。MinHook 摘要是本次收到文件的实测值，不宣称为上游签名或上游发布的摘要。此步骤不验证游戏实际加载效果。
 
 ## 需要参考的源代码
 
@@ -27,6 +37,8 @@ UAL Win32 NoPDB ZIP 发布资产的 SHA-256：
 | MinHook v1.3.4 | https://github.com/TsudaKageyu/minhook/archive/refs/tags/v1.3.4.zip | `include/MinHook.h`、`src/hook.c`、`src/trampoline.c`、`src/hde/hde32.c`、`LICENSE.txt`。构建直接使用此包。 |
 | Ultimate ASI Loader v9.7.4 | https://github.com/ThirteenAG/Ultimate-ASI-Loader/archive/refs/tags/v9.7.4.zip | `source/dllmain.cpp`：延迟加载、`InitializeASI` 调用与 `winmm.dll` 转发。仅参考，不参与本项目编译。 |
 | RA3MCP 本项目 | https://github.com/STanJK/RA3MCP | `native/src/bridge.cpp`、`controller/src/lib.rs` 和 `controller/src/main.rs`。 |
+
+UAL 源码已从用户提供的加密外层 ZIP 解出；内层 `Ultimate-ASI-Loader-9.7.4.zip` 的实测 SHA-256 为 `d3a1844984abe8b05eb64f7993a654ece0e97f27bbe4c096e17c700d017b834f`，CRC 检查正常。静态检查 `source/dllmain.cpp` 确认了 `winmm.dll` 转发分支、通过 `GetProcAddress` 调用无参数 `InitializeASI` 的路径，以及 `DontLoadFromDllMain` 延迟加载配置。源码仅供参考，不参与 RA3MCP 编译；实际进入游戏的加载效果仍待本机验证。
 
 不需要下载 ReShade 源码、整个 DirectX SDK 或 MinHook 的预编译 lib/bin。首版不 hook D3D9，不调用 D3DX；当前所需 Windows API 来自 Windows SDK。
 
