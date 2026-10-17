@@ -10,11 +10,14 @@
 namespace ra3::ai {
 
 constexpr uint32_t kMagic = 0x49413352; // bytes: R3AI
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;
 constexpr size_t kRequestSize = 16;
-constexpr size_t kResponseHeaderSize = 40;
-constexpr size_t kMaxAgents = 16;
+constexpr size_t kResponseHeaderSize = 48;
+constexpr size_t kAgentPrefixSize = 212;
+constexpr size_t kMaxAgents = 20;
 constexpr size_t kMaxStrategicStates = 64;
+constexpr uint32_t kInvalidPlayerSlot = 0xffffffffu;
+constexpr uint32_t kAllAgentSlotsMask = (1u << kMaxAgents) - 1u;
 
 using RequestPacket = std::array<uint8_t, kRequestSize>;
 
@@ -50,6 +53,18 @@ struct AgentSnapshot {
     uint32_t personalityRef = 0;
     uint32_t personalityDefinition = 0;
 
+    uint32_t playerSlot = kInvalidPlayerSlot;
+    uint32_t playerList = 0;
+    uint32_t playerLookupKey = 0;
+    uint32_t playerControlType = 0;
+    uint32_t playerAi = 0;
+    uint32_t playerSkirmishAi = 0;
+    uint32_t playerListActiveCount = 0;
+    uint32_t playerRawFlag106 = 0;
+    uint32_t playerDefeated = 0;
+    uint32_t playerIsCurrentOrLocal = 0;
+    uint32_t playerActiveEligible = 0;
+
     uint32_t disabled = 0;
     uint32_t lastUpdateFrame = 0;
     int32_t timer = 0;
@@ -83,7 +98,8 @@ struct AgentSnapshot {
 struct PlaneSnapshot {
     uint32_t generation = 0;
     uint32_t skippedCaptures = 0;
-    uint32_t agentCount = 0;
+    uint32_t agentSlotMask = 0;
+    uint32_t rejectedIdentities = 0;
     uint64_t exportedUnixMs = 0;
     std::array<AgentSnapshot, kMaxAgents> agents{};
 };
@@ -128,13 +144,21 @@ inline void append32(std::vector<uint8_t>& out, uint32_t value) {
 inline void append64(std::vector<uint8_t>& out, uint64_t value) {
     for(unsigned i = 0; i < 8; ++i) out.push_back(uint8_t(value >> (8 * i)));
 }
+inline uint32_t countAgents(uint32_t slotMask) {
+    uint32_t count = 0;
+    for(slotMask &= kAllAgentSlotsMask; slotMask; slotMask &= slotMask - 1) ++count;
+    return count;
+}
 
 inline std::vector<uint8_t> encodeResponse(const PlaneSnapshot& plane, uint32_t sequence, Status status) {
     std::vector<uint8_t> payload;
+    const uint32_t slotMask = status == Status::Ok ? plane.agentSlotMask & kAllAgentSlotsMask : 0;
+    const uint32_t agentCount = countAgents(slotMask);
     if(status == Status::Ok) {
-        payload.reserve(size_t(plane.agentCount) * (168 + kMaxStrategicStates * 12));
-        for(uint32_t i = 0; i < plane.agentCount && i < kMaxAgents; ++i) {
-            const auto& a = plane.agents[i];
+        payload.reserve(size_t(agentCount) * (kAgentPrefixSize + kMaxStrategicStates * 12));
+        for(uint32_t slot = 0; slot < kMaxAgents; ++slot) {
+            if(!(slotMask & (1u << slot))) continue;
+            const auto& a = plane.agents[slot];
             const size_t recordStart = payload.size();
             append32(payload, 0); // record size, patched after the variable state list
             append32(payload, a.flags);
@@ -144,6 +168,12 @@ inline std::vector<uint8_t> encodeResponse(const PlaneSnapshot& plane, uint32_t 
             for(uint32_t value : {a.skirmishAi, a.bank, a.buildManager, a.buildStateManager,
                                   a.strategicStateManager, a.strategyManager, a.economyManager,
                                   a.player, a.armyDefinition, a.personalityRef, a.personalityDefinition}) {
+                append32(payload, value);
+            }
+            for(uint32_t value : {a.playerSlot, a.playerList, a.playerLookupKey,
+                                  a.playerControlType, a.playerAi, a.playerSkirmishAi,
+                                  a.playerListActiveCount, a.playerRawFlag106, a.playerDefeated,
+                                  a.playerIsCurrentOrLocal, a.playerActiveEligible}) {
                 append32(payload, value);
             }
             for(uint32_t value : {a.disabled, a.lastUpdateFrame, uint32_t(a.timer),
@@ -175,12 +205,15 @@ inline std::vector<uint8_t> encodeResponse(const PlaneSnapshot& plane, uint32_t 
     write32(response.data() + 8, sequence);
     write32(response.data() + 12, uint32_t(payload.size()));
     write32(response.data() + 16, plane.generation);
-    write32(response.data() + 20, status == Status::Ok ? plane.agentCount : 0);
+    write32(response.data() + 20, agentCount);
     uint64_t timestamp = plane.exportedUnixMs;
     for(unsigned i = 0; i < 8; ++i) response[24 + i] = uint8_t(timestamp >> (8 * i));
     write32(response.data() + 32, plane.skippedCaptures);
+    write32(response.data() + 36, slotMask);
+    write32(response.data() + 40, plane.rejectedIdentities);
     response.insert(response.end(), payload.begin(), payload.end());
     return response;
 }
 
 } // namespace ra3::ai
+

@@ -34,15 +34,23 @@ int main() {
     check(decodedProbe.sequence==0x10203040);
     auto invalidProbe=probeRequest; invalidProbe[12]=1; check(!ai::decodeRequest(invalidProbe,decodedProbe));
     ai::PlaneSnapshot plane{};
-    plane.generation=7; plane.skippedCaptures=2; plane.agentCount=1; plane.exportedUnixMs=123456789;
-    auto& agent=plane.agents[0];
-    agent.skirmishAi=0x12340000; agent.captureSequence=9; agent.stateCount=1; agent.stateTotalCount=1;
+    plane.generation=7; plane.skippedCaptures=2; plane.agentSlotMask=1u<<3;
+    plane.rejectedIdentities=4; plane.exportedUnixMs=123456789;
+    auto& agent=plane.agents[3];
+    agent.playerSlot=3; agent.skirmishAi=0x12340000; agent.captureSequence=9;
+    agent.stateCount=1; agent.stateTotalCount=1;
     agent.states[0]={0x76540000,0x3f000000,1};
     const auto response=ai::encodeResponse(plane,0x10203040,ai::Status::Ok);
-    check(response.size()==ai::kResponseHeaderSize+180);
+    check(response.size()==ai::kResponseHeaderSize+224);
     check(ai::read32(response.data())==ai::kMagic);
     check(ai::read32(response.data()+8)==0x10203040);
-    check(ai::read32(response.data()+12)==180);
-    check(ai::read32(response.data()+ai::kResponseHeaderSize)==180);
+    check(ai::read32(response.data()+12)==224);
+    check(ai::read32(response.data()+20)==1);
+    check(ai::read32(response.data()+36)==(1u<<3));
+    check(ai::read32(response.data()+40)==4);
+    check(ai::read32(response.data()+ai::kResponseHeaderSize)==224);
+    check(ai::read32(response.data()+ai::kResponseHeaderSize+68)==3);
+    check(ai::read32(response.data()+ai::kResponseHeaderSize+212)==0x76540000);
     std::cout<<"input/AI protocols, validation, and bounded FIFO tests passed\n";
 }
+

@@ -8,7 +8,8 @@
 - 游戏逻辑线程只读取已经确认的对象偏移，并把结果复制到进程内固定容量快照；不分配内存、不访问文件或管道。
 - 发布使用 `try_lock`。CLI 导出线程恰好占用 plane 时，本帧采样直接跳过，并累计 `skipped_captures`，游戏线程不等待。
 - 独立管道工作线程从 plane 复制稳定快照，再以二进制协议发送。JSON 编码和文件写入全部发生在外部 `ra3ctl.exe`。
-- Plane 最多保留 16 个最近出现的 `SkirmishAI` 实例；每个实例最多导出 64 个战略状态。超过上限时设置截断标志，原始总数仍保留。
+- Plane 与引擎容量对齐为 20 个玩家槽。每个 AI 以经验证的 `Player+0x20` 槽位号索引，每个实例最多导出 64 个战略状态。超过状态上限时设置截断标志，原始总数仍保留。
+- 身份链必须同时满足 `SkirmishAI+0x8A8 -> Player`、`Player+0x90 == SkirmishAI`，以及 `PlayerList+0x30+slot*4 == Player`。失败样本不进入 plane，并累计 `rejected_identities`。
 
 鼠标输入管道 `\\.\pipe\RA3MCP.<PID>` 及其 24 字节 v1 协议保持不变。AI 快照使用独立端点：
 
@@ -51,6 +52,8 @@ dumped agents=3 generation=1842 captured=1842 skipped=0 file=dumps\ra3-ai-probe-
 
 每个 AI 实例当前导出：
 
+- `player_id`：当前 PlayerList 生命周期内稳定的 0..19 槽位号；JSON 同时标记 `kind=player_list_slot` 和验证状态。
+- PlayerList 地址、活动数量原值、控制类型原值、查找键原值、current/local、defeated、`+0x106` 原始状态与派生活动资格。
 - `SkirmishAI`、Player、ArmyDefinition、PersonalityRef/Definition 地址。
 - Bank、BuildManager、BuildStateManager、StrategicStateManager、StrategyManager、EconomyManager 地址。
 - disabled、last update frame、timer、strategic directive。
@@ -61,24 +64,24 @@ dumped agents=3 generation=1842 captured=1842 skipped=0 file=dumps\ra3-ai-probe-
 
 地址用于本轮探针和后续资产解析，不应跨进程或跨局缓存成稳定 ID。后续接入 LLM 前，应把 definition 地址映射为稳定的资产 ID 或名称。
 
-## AI 快照协议 v1
+## AI 快照协议 v2
 
 所有整数均为小端。请求固定 16 字节：
 
 | 偏移 | 类型 | 字段 |
 | --- | --- | --- |
 | 0 | u32 | magic `0x49413352`，ASCII `R3AI` |
-| 4 | u16 | version `1` |
+| 4 | u16 | version `2` |
 | 6 | u16 | operation `0`：读取最新 plane |
 | 8 | u32 | sequence |
 | 12 | u32 | reserved，必须为 0 |
 
-响应头固定 40 字节，后接变长 payload：
+响应头固定 48 字节，后接变长 payload：
 
 | 偏移 | 类型 | 字段 |
 | --- | --- | --- |
 | 0 | u32 | magic `R3AI` |
-| 4 | u16 | version `1` |
+| 4 | u16 | version `2` |
 | 6 | u16 | status：0 OK、1 Invalid、2 NotReady |
 | 8 | u32 | sequence |
 | 12 | u32 | payload 字节数 |
@@ -86,7 +89,10 @@ dumped agents=3 generation=1842 captured=1842 skipped=0 file=dumps\ra3-ai-probe-
 | 20 | u32 | AI 实例数 |
 | 24 | u64 | 导出 Unix 毫秒时间 |
 | 32 | u32 | 因锁竞争跳过的采样数 |
-| 36 | u32 | reserved，固定 0 |
+| 36 | u32 | agent player-slot bitmask，低 20 位有效 |
+| 40 | u32 | 因玩家身份校验失败而拒绝的采样数 |
+| 44 | u32 | reserved，固定 0 |
 
-Payload 是连续的实例记录。每条记录开头的 `u32 record_size` 包含自身及后续战略状态，可让未来版本追加字段。v1 固定前缀为 168 字节，每个战略状态再占 12 字节。CLI 会拒绝超过 64 KiB、数量越界、记录边界错误或 magic/version/sequence 不匹配的响应。
+Payload 按 player slot 升序包含连续实例记录。每条记录开头的 `u32 record_size` 包含自身及后续战略状态。v2 固定前缀为 212 字节，其中新增 PlayerList/slot/控制类型/状态字段；每个战略状态再占 12 字节。CLI 会校验 agent 数量、slot bitmask、记录内 slot、重复槽、边界及 magic/version/sequence。
+
 

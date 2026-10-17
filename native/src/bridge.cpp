@@ -26,6 +26,7 @@ constexpr uintptr_t kWheelRva = 0x8B0530 - kIdaBase;
 constexpr uintptr_t kWindowRva = 0xCD5C10 - kIdaBase;
 constexpr uintptr_t kSkirmishUpdateRva = 0x909A90 - kIdaBase;
 constexpr uintptr_t kGameLogicGlobalRva = 0xCDDE84 - kIdaBase;
+constexpr uintptr_t kPlayerListGlobalRva = 0xCEDE2C - kIdaBase;
 constexpr char kSha256[] = "dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0";
 using Pump = int (__thiscall*)(void*);
 using SkirmishUpdate = int (__thiscall*)(void*);
@@ -48,6 +49,7 @@ std::mutex g_planeMutex;
 ra3::ai::PlaneSnapshot g_plane;
 std::atomic<uint32_t> g_planeCaptureSequence{0};
 std::atomic<uint32_t> g_planeSkippedCaptures{0};
+std::atomic<uint32_t> g_planeRejectedIdentities{0};
 
 enum class Phase { Queued, Executing, Done, Cancelled };
 struct Request {
@@ -176,6 +178,10 @@ constexpr uint32_t kAgentStateVectorValid = 1u << 2;
 constexpr uint32_t kAgentStateVectorTruncated = 1u << 3;
 constexpr uint32_t kAgentPersonalityReadable = 1u << 4;
 constexpr uint32_t kAgentStrategyManagerReadable = 1u << 5;
+constexpr uint32_t kAgentPlayerReadable = 1u << 6;
+constexpr uint32_t kAgentPlayerOwnerVerified = 1u << 7;
+constexpr uint32_t kAgentPlayerListReadable = 1u << 8;
+constexpr uint32_t kAgentPlayerSlotVerified = 1u << 9;
 
 uint64_t unixMilliseconds() {
     FILETIME time{};
@@ -238,6 +244,38 @@ ra3::ai::AgentSnapshot captureAgent(void* selfPointer) {
     snapshot.timer = loadAt<int32_t>(self + 0x8CC);
     snapshot.strategicDirective = loadAt<int32_t>(self + 0x8EC);
     snapshot.stateNextEvaluationFrame = loadAt<uint32_t>(self + 0x6F4);
+
+    const uintptr_t player = snapshot.player;
+    if(readableRange(player, 0x1240)) {
+        snapshot.flags |= kAgentPlayerReadable;
+        snapshot.playerLookupKey = loadAt<uint32_t>(player + 0x1C);
+        snapshot.playerSlot = loadAt<uint32_t>(player + 0x20);
+        snapshot.playerControlType = loadAt<uint32_t>(player + 0x2C);
+        snapshot.playerAi = loadAt<uint32_t>(player + 0x8C);
+        snapshot.playerSkirmishAi = loadAt<uint32_t>(player + 0x90);
+        snapshot.playerRawFlag106 = loadAt<uint8_t>(player + 0x106);
+        snapshot.playerDefeated = loadAt<uint8_t>(player + 0x123C);
+        snapshot.playerActiveEligible =
+            snapshot.playerRawFlag106 == 0 && snapshot.playerDefeated == 0;
+        if(snapshot.playerSkirmishAi == self)
+            snapshot.flags |= kAgentPlayerOwnerVerified;
+
+        const uintptr_t playerListGlobal = g_base + kPlayerListGlobalRva;
+        if(readableRange(playerListGlobal, sizeof(uint32_t))) {
+            const uintptr_t playerList = loadAt<uint32_t>(playerListGlobal);
+            snapshot.playerList = uint32_t(playerList);
+            if(readableRange(playerList, 0x30 + ra3::ai::kMaxAgents * sizeof(uint32_t))) {
+                snapshot.flags |= kAgentPlayerListReadable;
+                const uintptr_t currentOrLocal = loadAt<uint32_t>(playerList + 0x28);
+                snapshot.playerListActiveCount = loadAt<uint32_t>(playerList + 0x2C);
+                snapshot.playerIsCurrentOrLocal = currentOrLocal == player;
+                if(snapshot.playerSlot < ra3::ai::kMaxAgents &&
+                   loadAt<uint32_t>(playerList + 0x30 + snapshot.playerSlot * sizeof(uint32_t)) == player) {
+                    snapshot.flags |= kAgentPlayerSlotVerified;
+                }
+            }
+        }
+    }
 
     const uintptr_t gameLogicGlobal = g_base + kGameLogicGlobalRva;
     if(readableRange(gameLogicGlobal, sizeof(uint32_t))) {
@@ -307,25 +345,24 @@ ra3::ai::AgentSnapshot captureAgent(void* selfPointer) {
 }
 
 void publishAgent(const ra3::ai::AgentSnapshot& snapshot) {
+    constexpr uint32_t kRequiredIdentity =
+        kAgentPlayerReadable | kAgentPlayerOwnerVerified |
+        kAgentPlayerListReadable | kAgentPlayerSlotVerified;
+    if((snapshot.flags & kRequiredIdentity) != kRequiredIdentity ||
+       snapshot.playerSlot >= ra3::ai::kMaxAgents) {
+        g_planeRejectedIdentities.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     if(!g_planeMutex.try_lock()) {
         g_planeSkippedCaptures.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    uint32_t slot = g_plane.agentCount;
-    for(uint32_t i = 0; i < g_plane.agentCount; ++i) {
-        if(g_plane.agents[i].skirmishAi == snapshot.skirmishAi) { slot = i; break; }
-    }
-    if(slot >= ra3::ai::kMaxAgents) {
-        slot = 0;
-        for(uint32_t i = 1; i < ra3::ai::kMaxAgents; ++i) {
-            if(g_plane.agents[i].captureSequence < g_plane.agents[slot].captureSequence) slot = i;
-        }
-    } else if(slot == g_plane.agentCount) {
-        ++g_plane.agentCount;
-    }
+    const uint32_t slot = snapshot.playerSlot;
     g_plane.agents[slot] = snapshot;
+    g_plane.agentSlotMask |= 1u << slot;
     ++g_plane.generation;
     g_plane.skippedCaptures = g_planeSkippedCaptures.load(std::memory_order_relaxed);
+    g_plane.rejectedIdentities = g_planeRejectedIdentities.load(std::memory_order_relaxed);
     g_planeMutex.unlock();
 }
 
@@ -463,15 +500,16 @@ std::vector<uint8_t> planeDispatch(const ra3::ai::RequestPacket& packet) {
         snapshot = g_plane;
     }
     snapshot.skippedCaptures = g_planeSkippedCaptures.load(std::memory_order_relaxed);
+    snapshot.rejectedIdentities = g_planeRejectedIdentities.load(std::memory_order_relaxed);
     snapshot.exportedUnixMs = unixMilliseconds();
-    const auto status = snapshot.agentCount ? ra3::ai::Status::Ok : ra3::ai::Status::NotReady;
+    const auto status = snapshot.agentSlotMask ? ra3::ai::Status::Ok : ra3::ai::Status::NotReady;
     return ra3::ai::encodeResponse(snapshot, request.sequence, status);
 }
 
 DWORD WINAPI servePlane(void*) {
     const std::wstring name = L"\\\\.\\pipe\\RA3MCP.AI." + std::to_wstring(GetCurrentProcessId());
     char message[160]{};
-    sprintf_s(message, "AI data plane ready: \\\\.\\pipe\\RA3MCP.AI.%lu (snapshot protocol v1)",
+    sprintf_s(message, "AI data plane ready: \\\\.\\pipe\\RA3MCP.AI.%lu (snapshot protocol v2)",
               GetCurrentProcessId());
     bool announced = false;
     for(;;) {
@@ -584,3 +622,4 @@ extern "C" void __cdecl InitializeASI() {
     else OutputDebugStringA("RA3InputBridge: worker thread creation failed.\n");
 }
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
+

@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 const MAGIC: u32 = 0x4941_3352; // bytes: R3AI
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const REQUEST_SIZE: usize = 16;
-const RESPONSE_HEADER_SIZE: usize = 40;
-const AGENT_PREFIX_SIZE: usize = 168;
-const MAX_AGENTS: u32 = 16;
+const RESPONSE_HEADER_SIZE: usize = 48;
+const AGENT_PREFIX_SIZE: usize = 212;
+const MAX_AGENTS: u32 = 20;
 const MAX_STATES: u32 = 64;
 const MAX_PAYLOAD: usize = 64 * 1024;
 
@@ -39,6 +39,17 @@ pub struct AgentDump {
     pub army_definition: u32,
     pub personality_ref: u32,
     pub personality_definition: u32,
+    pub player_slot: u32,
+    pub player_list: u32,
+    pub player_lookup_key: u32,
+    pub player_control_type: u32,
+    pub player_ai: u32,
+    pub player_skirmish_ai: u32,
+    pub player_list_active_count: u32,
+    pub player_raw_flag_106: u32,
+    pub player_defeated: bool,
+    pub player_is_current_or_local: bool,
+    pub player_active_eligible: bool,
     pub disabled: bool,
     pub last_update_frame: u32,
     pub timer: i32,
@@ -73,6 +84,8 @@ pub struct PlaneDump {
     pub pid: u32,
     pub generation: u32,
     pub skipped_captures: u32,
+    pub agent_slot_mask: u32,
+    pub rejected_identities: u32,
     pub exported_unix_ms: u64,
     pub agents: Vec<AgentDump>,
 }
@@ -98,7 +111,7 @@ impl Reader<'_> {
 }
 
 fn parse_agent(record: &[u8]) -> io::Result<AgentDump> {
-    if record.len() < AGENT_PREFIX_SIZE { return Err(invalid("AI agent record is shorter than v1 prefix")); }
+    if record.len() < AGENT_PREFIX_SIZE { return Err(invalid("AI agent record is shorter than v2 prefix")); }
     let declared = u32_at(record, 0)? as usize;
     if declared != record.len() { return Err(invalid("AI agent record size mismatch")); }
     let mut r = Reader { bytes: record, at: 4 };
@@ -117,6 +130,17 @@ fn parse_agent(record: &[u8]) -> io::Result<AgentDump> {
     let army_definition = r.u32()?;
     let personality_ref = r.u32()?;
     let personality_definition = r.u32()?;
+    let player_slot = r.u32()?;
+    let player_list = r.u32()?;
+    let player_lookup_key = r.u32()?;
+    let player_control_type = r.u32()?;
+    let player_ai = r.u32()?;
+    let player_skirmish_ai = r.u32()?;
+    let player_list_active_count = r.u32()?;
+    let player_raw_flag_106 = r.u32()?;
+    let player_defeated = r.u32()? != 0;
+    let player_is_current_or_local = r.u32()? != 0;
+    let player_active_eligible = r.u32()? != 0;
     let disabled = r.u32()? != 0;
     let last_update_frame = r.u32()?;
     let timer = r.i32()?;
@@ -157,7 +181,10 @@ fn parse_agent(record: &[u8]) -> io::Result<AgentDump> {
     Ok(AgentDump {
         flags, capture_sequence, game_frame, captured_unix_ms, skirmish_ai, bank, build_manager,
         build_state_manager, strategic_state_manager, strategy_manager, economy_manager, player,
-        army_definition, personality_ref, personality_definition, disabled, last_update_frame, timer,
+        army_definition, personality_ref, personality_definition, player_slot, player_list,
+        player_lookup_key, player_control_type, player_ai, player_skirmish_ai,
+        player_list_active_count, player_raw_flag_106, player_defeated,
+        player_is_current_or_local, player_active_eligible, disabled, last_update_frame, timer,
         strategic_directive, state_next_evaluation_frame, strategy_enabled, strategy_interval,
         strategy_next_frame, personality_update_interval: f32::from_bits(personality_update_interval_bits),
         personality_update_interval_bits, compatible_faction_count, compatible_factions,
@@ -171,7 +198,7 @@ fn parse_response(pid: u32, sequence: u32, header: &[u8; RESPONSE_HEADER_SIZE], 
     if u32_at(header, 0)? != MAGIC || u16_at(header, 4)? != VERSION || u32_at(header, 8)? != sequence {
         return Err(invalid("AI data-plane magic, version, or sequence mismatch"));
     }
-    if u32_at(header, 12)? as usize != payload.len() || u32_at(header, 36)? != 0 {
+    if u32_at(header, 12)? as usize != payload.len() || u32_at(header, 44)? != 0 {
         return Err(invalid("malformed AI data-plane response header"));
     }
     match u16_at(header, 6)? {
@@ -185,19 +212,36 @@ fn parse_response(pid: u32, sequence: u32, header: &[u8; RESPONSE_HEADER_SIZE], 
     let agent_count = u32_at(header, 20)?;
     let exported_unix_ms = u64_at(header, 24)?;
     let skipped_captures = u32_at(header, 32)?;
+    let agent_slot_mask = u32_at(header, 36)?;
+    let rejected_identities = u32_at(header, 40)?;
     if agent_count > MAX_AGENTS { return Err(invalid("AI data plane returned too many agents")); }
+    let valid_mask = (1u32 << MAX_AGENTS) - 1;
+    if agent_slot_mask & !valid_mask != 0 || agent_slot_mask.count_ones() != agent_count {
+        return Err(invalid("AI agent count and player-slot mask disagree"));
+    }
     let mut agents = Vec::with_capacity(agent_count as usize);
+    let mut parsed_slot_mask = 0u32;
     let mut at = 0usize;
     for _ in 0..agent_count {
         let size = u32_at(payload, at)? as usize;
         if size < AGENT_PREFIX_SIZE || at.checked_add(size).filter(|end| *end <= payload.len()).is_none() {
             return Err(invalid("invalid AI agent record boundary"));
         }
-        agents.push(parse_agent(&payload[at..at + size])?);
+        let agent = parse_agent(&payload[at..at + size])?;
+        if agent.player_slot >= MAX_AGENTS || agent_slot_mask & (1u32 << agent.player_slot) == 0 ||
+           parsed_slot_mask & (1u32 << agent.player_slot) != 0 {
+            return Err(invalid("AI agent has an invalid or duplicate player slot"));
+        }
+        parsed_slot_mask |= 1u32 << agent.player_slot;
+        agents.push(agent);
         at += size;
     }
     if at != payload.len() { return Err(invalid("trailing bytes in AI data-plane payload")); }
-    Ok(PlaneDump { pid, generation, skipped_captures, exported_unix_ms, agents })
+    if parsed_slot_mask != agent_slot_mask {
+        return Err(invalid("AI payload does not cover the advertised player slots"));
+    }
+    Ok(PlaneDump { pid, generation, skipped_captures, agent_slot_mask,
+        rejected_identities, exported_unix_ms, agents })
 }
 
 pub fn capture(pid: u32) -> io::Result<PlaneDump> {
@@ -233,6 +277,10 @@ fn flags(value: u32) -> Json {
         ("state_vector_truncated", Json::Bool(value & (1 << 3) != 0)),
         ("personality_readable", Json::Bool(value & (1 << 4) != 0)),
         ("strategy_manager_readable", Json::Bool(value & (1 << 5) != 0)),
+        ("player_readable", Json::Bool(value & (1 << 6) != 0)),
+        ("player_owner_verified", Json::Bool(value & (1 << 7) != 0)),
+        ("player_list_readable", Json::Bool(value & (1 << 8) != 0)),
+        ("player_slot_verified", Json::Bool(value & (1 << 9) != 0)),
     ])
 }
 
@@ -268,6 +316,20 @@ impl PlaneDump {
                 ("flags", number(state.flags)),
             ])).collect();
             Json::object([
+                ("player_id", number(agent.player_slot)),
+                ("player_identity", Json::object([
+                    ("kind", "player_list_slot".into()),
+                    ("slot", number(agent.player_slot)),
+                    ("verified", Json::Bool(agent.flags & (1 << 9) != 0)),
+                    ("lookup_key_raw", format!("0x{:08X}", agent.player_lookup_key).into()),
+                    ("control_type_raw", number(agent.player_control_type)),
+                    ("observed_ai_path", Json::Bool(agent.player_control_type == 1)),
+                    ("active_count_raw", number(agent.player_list_active_count)),
+                    ("raw_flag_106", number(agent.player_raw_flag_106)),
+                    ("defeated", agent.player_defeated.into()),
+                    ("active_eligible", agent.player_active_eligible.into()),
+                    ("is_current_or_local", agent.player_is_current_or_local.into()),
+                ])),
                 ("addresses", Json::object([
                     ("skirmish_ai", address(agent.skirmish_ai)), ("bank", address(agent.bank)),
                     ("build_manager", address(agent.build_manager)),
@@ -278,6 +340,9 @@ impl PlaneDump {
                     ("army_definition", address(agent.army_definition)),
                     ("personality_ref", address(agent.personality_ref)),
                     ("personality_definition", address(agent.personality_definition)),
+                    ("player_list", address(agent.player_list)),
+                    ("player_ai", address(agent.player_ai)),
+                    ("player_skirmish_ai", address(agent.player_skirmish_ai)),
                 ])),
                 ("capture_sequence", number(agent.capture_sequence)),
                 ("captured_unix_ms", number(agent.captured_unix_ms)),
@@ -316,7 +381,7 @@ impl PlaneDump {
             ])
         }).collect();
         let root = Json::object([
-            ("schema", "ra3mcp.ai-plane.v1".into()),
+            ("schema", "ra3mcp.ai-plane.v2".into()),
             ("target", Json::object([
                 ("executable", "ra3_1.12.game".into()),
                 ("sha256", "dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0".into()),
@@ -324,6 +389,8 @@ impl PlaneDump {
             ])),
             ("plane_generation", number(self.generation)),
             ("skipped_captures", number(self.skipped_captures)),
+            ("rejected_identities", number(self.rejected_identities)),
+            ("agent_slot_mask", format!("0x{:08X}", self.agent_slot_mask).into()),
             ("exported_unix_ms", number(self.exported_unix_ms)),
             ("exported_utc", utc(self.exported_unix_ms).into()),
             ("agents", Json::Array(agents)),
@@ -366,12 +433,14 @@ mod tests {
         record[12..16].copy_from_slice(&42u32.to_le_bytes());
         record[16..24].copy_from_slice(&1234u64.to_le_bytes());
         record[24..28].copy_from_slice(&0x1234_0000u32.to_le_bytes());
-        record[156..160].copy_from_slice(&1u32.to_le_bytes());
-        record[160..164].copy_from_slice(&1u32.to_le_bytes());
-        record[164..168].copy_from_slice(&1u32.to_le_bytes());
-        record[168..172].copy_from_slice(&0x7654_0000u32.to_le_bytes());
-        record[172..176].copy_from_slice(&0.5f32.to_bits().to_le_bytes());
-        record[176..180].copy_from_slice(&1u32.to_le_bytes());
+        record[52..56].copy_from_slice(&0x2345_0000u32.to_le_bytes());
+        record[68..72].copy_from_slice(&3u32.to_le_bytes());
+        record[200..204].copy_from_slice(&1u32.to_le_bytes());
+        record[204..208].copy_from_slice(&1u32.to_le_bytes());
+        record[208..212].copy_from_slice(&1u32.to_le_bytes());
+        record[212..216].copy_from_slice(&0x7654_0000u32.to_le_bytes());
+        record[216..220].copy_from_slice(&0.5f32.to_bits().to_le_bytes());
+        record[220..224].copy_from_slice(&1u32.to_le_bytes());
         let mut header = [0u8; RESPONSE_HEADER_SIZE];
         header[0..4].copy_from_slice(&MAGIC.to_le_bytes());
         header[4..6].copy_from_slice(&VERSION.to_le_bytes());
@@ -380,17 +449,23 @@ mod tests {
         header[16..20].copy_from_slice(&7u32.to_le_bytes());
         header[20..24].copy_from_slice(&1u32.to_le_bytes());
         header[24..32].copy_from_slice(&1234u64.to_le_bytes());
+        header[36..40].copy_from_slice(&(1u32 << 3).to_le_bytes());
+        header[40..44].copy_from_slice(&2u32.to_le_bytes());
         (header, record)
     }
 
     #[test]
-    fn parses_v1_and_emits_timestamped_json() {
+    fn parses_v2_player_identity_and_emits_timestamped_json() {
         let (header, payload) = response();
         let dump = parse_response(88, 1, &header, &payload).unwrap();
         assert_eq!(dump.generation, 7);
+        assert_eq!(dump.agent_slot_mask, 1 << 3);
+        assert_eq!(dump.rejected_identities, 2);
+        assert_eq!(dump.agents[0].player_slot, 3);
         assert_eq!(dump.agents[0].states[0].score, 0.5);
         let json = dump.json();
-        assert!(json.contains("ra3mcp.ai-plane.v1"));
+        assert!(json.contains("ra3mcp.ai-plane.v2"));
+        assert!(json.contains("\"player_id\": 3"));
         assert!(json.contains("0x76540000"));
         assert_eq!(utc(0), "1970-01-01T00:00:00.000Z");
     }
@@ -398,8 +473,9 @@ mod tests {
     #[test]
     fn rejects_truncation_and_oversized_counts() {
         let (header, mut payload) = response();
-        payload[160..164].copy_from_slice(&65u32.to_le_bytes());
+        payload[204..208].copy_from_slice(&65u32.to_le_bytes());
         assert!(parse_response(88, 1, &header, &payload).is_err());
         assert!(parse_response(88, 2, &header, &payload).is_err());
     }
 }
+

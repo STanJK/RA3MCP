@@ -15,7 +15,7 @@
 
 ## AI data plane 与 probe
 
-ASI 在 `SkirmishAI::Update` 返回后，把已确认的对象字段复制到固定容量的进程内 plane。发布只尝试获取锁；若 CLI 恰好正在复制快照，本帧采样会被跳过，游戏线程不会等待。独立工作线程通过 `\\.\pipe\RA3MCP.AI.<PID>` 导出二进制快照，JSON 序列化和落盘均由外部 CLI 完成。
+ASI 在 `SkirmishAI::Update` 返回后，把已确认的对象字段复制到固定容量的进程内 plane。每个 AI 通过 `SkirmishAI -> Player -> PlayerList[slot]` 双向关系验证，并按 `Player+0x20` 的 0..19 槽位号索引；裸指针不再作为 agent 身份。发布只尝试获取锁；若 CLI 恰好正在复制快照，本帧采样会被跳过，游戏线程不会等待。独立工作线程通过 `\\.\pipe\RA3MCP.AI.<PID>` 导出二进制快照，JSON 序列化和落盘均由外部 CLI 完成。
 
 进入包含 Skirmish AI 的对局后执行：
 
@@ -24,7 +24,7 @@ $gamePid = (Get-CimInstance Win32_Process -Filter "Name='ra3_1.12.game'").Proces
 .\target\release\ra3ctl.exe --pid $gamePid probe
 ```
 
-默认生成 `dumps/ra3-ai-probe-<PID>-<UTC>-g<generation>.json`。可用 `probe --output <file>` 指定文件，已有文件不会被覆盖。首版导出 Player、Personality、各 AI manager 地址，战略状态分数与 vector 元数据、定时器、directive、游戏帧及采集/导出时间。完整字段和二进制协议见 [AI Probe](docs/AI_PROBE.md)。
+默认生成 `dumps/ra3-ai-probe-<PID>-<UTC>-g<generation>.json`。可用 `probe --output <file>` 指定文件，已有文件不会被覆盖。v2 导出已验证的 `player_id`（PlayerList slot）、Player 原始控制/状态字段、Player/Personality/各 AI manager 地址、战略状态分数与 vector 元数据、定时器、directive、游戏帧及采集/导出时间。完整字段和二进制协议见 [AI Probe](docs/AI_PROBE.md)。
 
 ## 本机准备与构建
 
@@ -141,3 +141,4 @@ UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。
 本机编译命令和验收步骤见 [MCP 接入规范](docs/MCP_TOOLHUB.md)，历史构建操作参考见 [本地验证计划](docs/TOOLHUB.md)。[桥接协议文档](docs/PROTOCOL.md) 描述控制器与 ASI 之间的 24 字节命名管道协议。
 
 项目采用 Apache-2.0；静态链接的 MinHook 保留其 BSD 许可证，`Stage.ps1` 会一并复制。ASI Loader 单独下载并遵循其许可证。仓库不包含游戏二进制、游戏资源或第三方预编译 DLL。
+
