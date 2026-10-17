@@ -1,23 +1,183 @@
-# 本机 Toolhub 编译与验证计划
+# 本机 ToolHub 编译与验证计划
 
-用户约束：远端仅编辑代码和静态检查；Cargo、C++ 编译、单元测试、打包与游戏内测试均在用户本机进行。当前仅提供待接入命令，尚未修改 Toolhub 配置，也未宣称 Windows 构建通过。
+用户约束：远端仅编辑代码和静态检查；Cargo、C++ 编译、单元测试、打包与游戏内测试均在用户本机进行。
 
-下面把 `D:\src\RA3MCP` 替换为真实 checkout 根目录。Toolhub 应以明确的仓库工作目录调用固定脚本，不把请求文本拼接到任意 shell 命令。每次从 GitHub 更新代码后，记录当前 commit SHA 和命令退出码。
+RA3MCP 本机 checkout：
 
-| 建议命令名 | 程序 | 参数（数组） | 工作目录 |
-| --- | --- | --- | --- |
-| ra3mcp_build | `powershell.exe` | `-NoProfile`, `-File`, `D:\src\RA3MCP\scripts\Build.ps1`, `-Configuration`, `Release` | `D:\src\RA3MCP` |
-| ra3mcp_test | `powershell.exe` | `-NoProfile`, `-File`, `D:\src\RA3MCP\scripts\Test.ps1`, `-Configuration`, `Release` | 同上 |
-| ra3mcp_stage | `powershell.exe` | `-NoProfile`, `-File`, `D:\src\RA3MCP\scripts\Stage.ps1`, `-Configuration`, `Release` | 同上 |
+```text
+C:\STanJK\Development\RA3MCP
+```
 
-配置期再根据用户已有 PowerShell 执行策略决定如何运行本地可信脚本。MinHook 路径不在默认目录时，给 build 和 stage 同时追加 `-MinHookDir` 与源码根目录。三个命令均不应自动下载依赖或复制文件到游戏目录。
+ToolHub 不调用 `scripts/Build.ps1` / `Test.ps1` / `Stage.ps1` 作为编译入口，而是直接暴露底层固定工具链操作。远端只能选择已经定义好的 project + operation，不能提供 executable、argv、cwd 或 shell 文本。
+
+## ToolHub project
+
+建议 Local Build 项目：
+
+```yaml
+RA3MCP:
+  description: RA3MCP native bridge and Rust controller
+  root: 'C:\STanJK\Development\RA3MCP'
+
+  operations:
+    git-status:
+      description: Show RA3MCP git status
+      program: git.exe
+      args:
+        - status
+        - --short
+        - --branch
+
+    git-pull:
+      description: Fast-forward RA3MCP from its configured upstream
+      program: git.exe
+      args:
+        - pull
+        - --ff-only
+
+    git-sync-generated:
+      description: Safely recover a locally dirty Cargo.lock when origin/main contains the canonical incoming lockfile
+      builtin: git-sync-generated
+
+    native-configure:
+      description: Configure RA3InputBridge for Visual Studio 2022 Win32 with local MinHook
+      program: cmake.exe
+      args:
+        - -S
+        - .
+        - -B
+        - build/win32
+        - -G
+        - Visual Studio 17 2022
+        - -A
+        - Win32
+        - -DMINHOOK_DIR:PATH=C:/STanJK/Development/RA3MCP/third_party/minhook
+        - -DRA3_BUILD_BRIDGE=ON
+
+    native-build:
+      description: Build RA3InputBridge and native tests in Release
+      program: cmake.exe
+      args:
+        - --build
+        - build/win32
+        - --config
+        - Release
+
+    native-test:
+      description: Run native CTest suite in Release
+      program: ctest.exe
+      args:
+        - --test-dir
+        - build/win32
+        - -C
+        - Release
+        - --output-on-failure
+
+    cargo-check:
+      description: Check ra3ctl with locked offline dependency resolution
+      program: cargo.exe
+      args:
+        - check
+        - --locked
+        - --offline
+        - -p
+        - ra3ctl
+
+    cargo-build:
+      description: Build ra3ctl Release with locked offline dependency resolution
+      program: cargo.exe
+      args:
+        - build
+        - --locked
+        - --offline
+        - -p
+        - ra3ctl
+        - --release
+
+    cargo-test:
+      description: Test ra3ctl with locked offline dependency resolution
+      program: cargo.exe
+      args:
+        - test
+        - --locked
+        - --offline
+        - -p
+        - ra3ctl
+```
+
+## 构建栈
+
+### Native / C++
+
+`native-configure` 等价于直接执行：
+
+```text
+cmake -S . -B build/win32 -G "Visual Studio 17 2022" -A Win32 ^
+  -DMINHOOK_DIR:PATH=C:/STanJK/Development/RA3MCP/third_party/minhook ^
+  -DRA3_BUILD_BRIDGE=ON
+```
+
+然后：
+
+```text
+cmake --build build/win32 --config Release
+ctest --test-dir build/win32 -C Release --output-on-failure
+```
+
+CMake 的 Visual Studio generator 自己调用 MSBuild，因此 ToolHub 不需要通过 Developer PowerShell 包一层构建脚本。
+
+MinHook 必须已经位于：
+
+```text
+C:\STanJK\Development\RA3MCP\third_party\minhook
+```
+
+并至少包含 `include/MinHook.h` 与 CMakeLists.txt 要求的源码文件。
+
+### Rust / controller
+
+ToolHub 直接使用：
+
+```text
+cargo check --locked --offline -p ra3ctl
+cargo build --locked --offline -p ra3ctl --release
+cargo test --locked --offline -p ra3ctl
+```
+
+`--locked` 保证验证过程不会隐式改写 `Cargo.lock`；`--offline` 保证本机验证不会下载依赖。若后续添加新依赖，需要先在本机准备好依赖缓存并由远端提交 canonical `Cargo.lock`。
+
+## 推荐验证顺序
+
+正常一轮：
+
+```text
+git-pull
+native-configure   # CMake 配置变化、clean checkout 或首次构建时
+native-build
+native-test
+cargo-check
+cargo-build
+cargo-test
+git-status
+```
+
+如果 CMake 配置未变化，可以跳过 `native-configure`。
+
+如果本地只有 `Cargo.lock` 被工具自动改脏，而且 `origin/main` 已经包含新的 canonical `Cargo.lock`，可以使用 ToolHub 的 fail-closed `git-sync-generated`，不要暴露通用 `git reset/restore`。
 
 ## 编译后检查
 
-1. `ra3mcp_build`：MSVC Win32 编译 ASI；本机 Cargo 离线编译控制器。
-2. `ra3mcp_test`：执行 C++ 协议固定向量/格式拒绝/有界队列 FIFO 测试，以及 Rust 协议回执/拖动插值测试。
-3. 在 VS Developer PowerShell 中运行 `dumpbin /headers build\win32\Release\RA3InputBridge.asi`，确认 `14C machine (x86)`；运行 `dumpbin /exports` 确认 `InitializeASI` 未修饰导出。
-4. `ra3mcp_stage`：输出 `dist/Release`，包含 MinHook 许可证；该目录不含 UAL，需独立下载。
+1. `native-build`：MSVC Win32 编译 `RA3InputBridge.asi` 与 native tests。
+2. `native-test`：执行 C++ 协议固定向量、格式拒绝、有界队列 FIFO 等 CTest。
+3. `cargo-build`：离线 Release 编译 `ra3ctl.exe`。
+4. `cargo-test`：执行 Rust 协议回执、拖动插值等测试。
+5. 后续如需要，可再给 ToolHub 增加固定的 `dumpbin` 验证 operation；暂不引入任意 shell 或 PowerShell wrapper。
+
+## Staging
+
+`scripts/Stage.ps1` 当前仅负责将已经存在的构建产物、许可证、示例配置和 README 复制到 `dist/Release`。它暂时不作为 ToolHub 编译能力暴露。
+
+如果 staging 进入日常自动验证流程，再单独实现固定语义 operation；不要因此引入通用 PowerShell 执行能力。
 
 ## 游戏内验收（建议离线单人局）
 
