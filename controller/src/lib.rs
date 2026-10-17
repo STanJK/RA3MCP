@@ -1,3 +1,4 @@
+mod ai_index;
 mod json;
 mod pipe;
 pub mod mcp;
