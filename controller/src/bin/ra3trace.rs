@@ -60,8 +60,12 @@ fn parse(arguments: Vec<OsString>) -> io::Result<Option<Options>> {
     Ok(Some(Options { executable, arguments: game_arguments, seconds, output }))
 }
 
-// CommandLineToArgvW / Microsoft CRT quoting, preserving UTF-16 code units.
+// Quote only when needed. Older launchers may inspect the raw command line
+// instead of using CRT argv rules, so harmless extra quotes can change behavior.
 fn quote_argument(value: &[u16]) -> Vec<u16> {
+    if !value.is_empty() && !value.iter().any(|&unit| matches!(unit, 0x20 | 0x09 | 0x22)) {
+        return value.to_vec();
+    }
     let mut result = vec![b'"' as u16];
     let mut slashes = 0;
     for &unit in value {
@@ -74,6 +78,32 @@ fn quote_argument(value: &[u16]) -> Vec<u16> {
     result.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2));
     result.push(b'"' as u16);
     result
+}
+
+fn command_line(executable: &[u16], arguments: &[Vec<u16>]) -> Vec<u16> {
+    let mut command = quote_argument(executable);
+    for argument in arguments {
+        command.push(b' ' as u16);
+        command.extend(quote_argument(argument));
+    }
+    command
+}
+
+// canonicalize() produces verbatim Windows paths. Launch using conventional
+// drive/UNC spelling so legacy launchers receive the same paths as a manual run.
+fn launch_path(value: &[u16]) -> Vec<u16> {
+    const VERBATIM: &[u16] = &[92, 92, 63, 92];
+    const UNC: &[u16] = &[92, 92, 63, 92, 85, 78, 67, 92];
+    if value.starts_with(UNC) {
+        let mut ordinary = vec![92, 92];
+        ordinary.extend_from_slice(&value[UNC.len()..]);
+        ordinary
+    } else if value.starts_with(VERBATIM) && value.len() >= 7
+        && matches!(value[4], 65..=90 | 97..=122) && value[5] == 58 && value[6] == 92 {
+        value[VERBATIM.len()..].to_vec()
+    } else {
+        value.to_vec()
+    }
 }
 
 fn json_string(value: &str) -> String {
@@ -101,7 +131,7 @@ mod windows {
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use std::mem::{size_of, zeroed};
-    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::ptr::{null, null_mut};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
@@ -176,6 +206,7 @@ mod windows {
             size: usize, read: *mut usize) -> i32;
         fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
         #[cfg(test)] fn OutputDebugStringW(message: *const u16);
+        #[cfg(test)] fn GetCommandLineW() -> *const u16;
     }
     struct OwnedHandle(Handle);
     impl Drop for OwnedHandle {
@@ -278,19 +309,21 @@ mod windows {
     pub(super) struct Summary { pub processes: usize, pub dlls: usize, pub debug_strings: usize, pub nonzero_exits: usize }
 
     pub(super) fn trace(options: Options, quiet: bool) -> io::Result<Summary> {
-        let exe = wide(options.executable.as_os_str())?;
-        let directory = wide(options.executable.parent().ok_or_else(|| invalid("no working directory"))?.as_os_str())?;
-        let mut command = quote_argument(&exe[..exe.len() - 1]);
-        for argument in &options.arguments {
-            let value = wide(argument)?;
-            command.push(b' ' as u16);
-            command.extend(quote_argument(&value[..value.len() - 1]));
-        }
+        let executable = PathBuf::from(OsString::from_wide(&launch_path(
+            &options.executable.as_os_str().encode_wide().collect::<Vec<_>>())));
+        let exe = wide(executable.as_os_str())?;
+        let directory = wide(executable.parent().ok_or_else(|| invalid("no working directory"))?.as_os_str())?;
+        let arguments = options.arguments.iter().map(|argument| {
+            let mut value = wide(argument)?;
+            value.pop(); // command_line adds the final NUL once, after all arguments.
+            Ok(value)
+        }).collect::<io::Result<Vec<_>>>()?;
+        let mut command = command_line(&exe[..exe.len() - 1], &arguments);
         let display_command = String::from_utf16_lossy(&command);
         command.push(0);
         if let Some(parent) = options.output.parent().filter(|p| !p.as_os_str().is_empty()) { std::fs::create_dir_all(parent)?; }
         let mut log = Log { file: OpenOptions::new().write(true).create_new(true).open(&options.output)?, started: Instant::now(), quiet };
-        log.event(0, 0, "trace_start", &[("command", display_command), ("cwd", options.executable.parent().unwrap().display().to_string()),
+        log.event(0, 0, "trace_start", &[("command", display_command), ("cwd", executable.parent().unwrap().display().to_string()),
             ("seconds", options.seconds.to_string()), ("mode", "DEBUG_PROCESS; observing debugger; no injection".into())], true)?;
         if !quiet { println!("Log: {}", options.output.display()); }
         STOP.store(false, Ordering::Relaxed);
@@ -416,6 +449,16 @@ mod windows {
         #[test]
         #[ignore = "subprocess fixture, invoked only by debug_event_smoke"]
         fn trace_child_fixture() {
+            // Check the actual raw command delivered by CreateProcessW, since
+            // CRT argv alone would accept both the broken and corrected forms.
+            let raw = unsafe {
+                let pointer = GetCommandLineW();
+                let mut length = 0;
+                while *pointer.add(length) != 0 { length += 1; }
+                String::from_utf16_lossy(std::slice::from_raw_parts(pointer, length))
+            };
+            assert!(raw.ends_with(" --ignored --exact windows::tests::trace_child_fixture --nocapture"), "{raw}");
+            assert!(!raw.contains(r"\\?\"), "verbatim prefix leaked into child command: {raw}");
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--ignored", "--exact", "windows::tests::trace_leaf_fixture", "--nocapture"])
                 .status().unwrap();
@@ -474,7 +517,33 @@ mod tests {
         assert_eq!(quoted(""), "\"\"");
         assert_eq!(quoted("C:\\Program Files\\RA3.exe"), "\"C:\\Program Files\\RA3.exe\"");
         assert_eq!(quoted("a\"b"), "\"a\\\"b\"");
-        assert_eq!(quoted("C:\\game\\"), "\"C:\\game\\\\\"");
+        assert_eq!(quoted("C:\\game\\"), "C:\\game\\");
+        assert_eq!(quoted("C:\\game dir\\"), "\"C:\\game dir\\\\\"");
+        assert_eq!(quoted("-runver"), "-runver");
+        assert_eq!(quoted("1.12"), "1.12");
+        assert_eq!(quoted("a\tb"), "\"a\tb\"");
+    }
+    #[test]
+    fn ra3_command_matches_working_manual_launch() {
+        let exe = r"\\?\C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3\RA3.exe";
+        let arguments = ["-win", "-xres", "1920", "-yres", "1080", "-runver", "1.12"]
+            .map(|value| value.encode_utf16().collect()).to_vec();
+        let command = command_line(&launch_path(&exe.encode_utf16().collect::<Vec<_>>()), &arguments);
+        assert_eq!(String::from_utf16(&command).unwrap(),
+            r#""C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3\RA3.exe" -win -xres 1920 -yres 1080 -runver 1.12"#);
+    }
+    #[test]
+    fn launch_paths_keep_drive_unc_and_utf16_spelling() {
+        for (input, expected) in [
+            (r"\\?\C:\游戏\RA3.exe", r"C:\游戏\RA3.exe"),
+            (r"\\?\UNC\server\share\RA3.exe", r"\\server\share\RA3.exe"),
+            (r"C:\game\RA3.exe", r"C:\game\RA3.exe"),
+            (r"\\?\Volume{123}\game", r"\\?\Volume{123}\game"),
+        ] {
+            assert_eq!(launch_path(&input.encode_utf16().collect::<Vec<_>>()), expected.encode_utf16().collect::<Vec<_>>());
+        }
+        let units = [92, 92, 63, 92, 67, 58, 92, 0xd800];
+        assert_eq!(launch_path(&units), units[4..]);
     }
     #[test]
     fn trace_json_escapes_paths_and_control_characters() {

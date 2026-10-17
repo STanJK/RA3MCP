@@ -8,6 +8,8 @@
 
 用户确认 `runme.exe` 是 Steam 的代理入口；本轮手动跟踪从游戏根目录的 `RA3.exe` 开始，传入 `-win -xres 1920 -yres 1080 -runver 1.12`。已提供的启动命令显示 `Data/RA3_1.12.game` 收到窗口参数和 `-config "<游戏根目录>/RA3_English_1.12.SkuDef"`；实际父子关系和 DLL 路径仍由跟踪日志确认。
 
+首轮跟踪记录了 `RA3.exe`（PID 27128）创建 `Data/ra3_1.13.game`（PID 38488）；根目录 WinMM 和 ASI 进入启动器，游戏加载的是系统 WinMM/D3D9。该轮跟踪器把普通参数也分别加上引号，并将 canonicalize 的 `\\?\` 路径直接传给启动器，生成的原始命令与用户能正常启动 1.12 的手动命令不同。当前已修正为普通 drive/UNC 路径，并只在参数为空或包含空格、制表符、双引号时转义。新增完整 RA3 原始命令回归测试，以及读取子进程 `GetCommandLineW` 的实际传参验证；修正后的游戏版本与加载路径仍待用户复测。
+
 跟踪目标是逐个回答：实际创建了哪些进程、它们的父 PID 是谁、`.game` 从哪里启动、每个进程加载的 `winmm.dll` / `d3d9.dll` 是本地还是系统文件，以及 `RA3InputBridge.asi` 是否映射进 `.game`。
 
 ## 构建
@@ -31,7 +33,7 @@ cd C:\STanJK\Development\RA3MCP
     -- -win -xres 1920 -yres 1080 -runver 1.12
 ```
 
-本轮 `--exe` 固定选择 `RA3.exe`。`--` 后面的参数原样传给它，工作目录设置为游戏根目录，由启动器选择 1.12 版本并传入 SkuDef。跟踪器无需改动或重新编译。
+本轮 `--exe` 固定选择 `RA3.exe`。`--` 后面的参数传给它，工作目录设置为游戏根目录，由启动器选择 1.12 版本并传入 SkuDef。请使用修复后重新构建的跟踪器；`trace_start` 的命令应为 `"C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3\RA3.exe" -win -xres 1920 -yres 1080 -runver 1.12`，普通参数不再额外加引号。
 
 默认 JSONL 保存到 `ra3trace.exe` 旁边的 `logs/ra3trace-<时间>-<跟踪器PID>.jsonl`，启动时会显示完整位置。也可通过 `--out 'D:\traces\ra3-startup.jsonl'` 指定一个尚不存在的文件，已有文件会拒绝覆盖。
 
