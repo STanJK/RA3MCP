@@ -23,4 +23,6 @@ Copy-Item (Join-Path $repo 'LICENSE') (Join-Path $stage 'licenses/RA3MCP-LICENSE
 Copy-Item (Join-Path $repo 'config/global.ini.example') (Join-Path $stage 'global.ini.example') -Force
 Copy-Item (Join-Path $repo 'README.md') (Join-Path $stage 'README.md') -Force
 Write-Output "Staged: $stage"
-Write-Output 'Download ASI Loader separately. Follow README for manual installation.'
+Write-Output 'Deploy to the game root containing RA3.exe: d3d9.dll, global.ini, scripts/RA3InputBridge.asi.'
+Write-Output 'Copy the verified loader from downloads/ual-win32/d3d9.dll; merge global.ini.example as global.ini.'
+Write-Output 'Runtime log: <game root>/scripts/RA3InputBridge.log. This staging script does not install game files.'

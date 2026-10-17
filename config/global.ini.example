@@ -1,3 +1,5 @@
+; Deploy as <game root>/global.ini, beside RA3.exe and d3d9.dll.
+; Plugins: <game root>/scripts/*.asi.
 [GlobalSets]
 LoadPlugins=1
 DontLoadFromDllMain=1

@@ -9,7 +9,7 @@
 - 32 位 `ra3_1.12.game`，IDA image base `0x400000`。
 - 文件 SHA-256：`dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0`。
 - 模块加载后先核对架构、映像范围、文件哈希；不匹配时记录日志并拒绝安装 hook。
-- 实际加载目标是 `Data/ra3_1.12.game` 所在进程，不是外层启动器。
+- 被控制和校验的进程为 `Data/ra3_1.12.game`；Loader、配置和 `scripts` 部署在包含 `RA3.exe` 的游戏根目录。
 
 地址、对象关系和调用约定见 [逆向记录](docs/REVERSE_ENGINEERING.md)。
 
@@ -49,23 +49,25 @@ Rust 无第三方 crate，脚本使用 `--locked --offline`。首次安装工具
 ## ASI 加载（D3D9）
 
 1. 退出游戏和启动器。Steam 启动选项使用 `-runver 1.12 -win -xres 1920 -yres 1080`，确认实际进程为 `Data/ra3_1.12.game`；桥接仍会核对文件哈希。
-2. 使用用户已确认游戏会加载 `d3d9.dll` 的目录作为「加载目录」。以下配置与 `scripts` 均放在这个目录旁边；不要把 loader 与插件分到两个不同的加载目录。
+2. 加载目录固定为 **包含 `RA3.exe` 的游戏根目录**。用户于 2026-10-17 多次测试确认：`d3d9.dll` 与 `scripts` 必须放在这里。
 3. 将先前为本项目部署的 UAL `winmm.dll` 移到游戏目录外保存。若加载目录已有 `d3d9.dll` 或 `d3d9Hooked.dll`，也先移出保存；本方案不与 ReShade 共存。
 4. 把 `downloads/ual-win32/d3d9.dll` 复制到加载目录。它是已校验的 UAL v9.7.4 Win32 loader，包内原名为 `dinput8.dll`；不需要重新下载或编译。
 5. **手动创建**加载目录下的 `scripts` 文件夹，将 `dist/Release/scripts/RA3InputBridge.asi` 放进去。游戏和 UAL 不会为部署自动创建这个文件夹。
 6. 将 `config/global.ini.example` 的配置合并到加载目录的 `global.ini`；没有该文件时复制并去掉 `.example` 后缀。`DontLoadFromDllMain=1` 使 UAL 在其延迟加载路径调用 `InitializeASI`。
 7. 启动游戏，查看加载目录的 `scripts/RA3InputBridge.log`。成功时有 `Ready: \\.\pipe\RA3MCP.<PID>`。没有日志时还需检查进程模块、命名管道和日志目录写权限，不能仅凭日志缺失认定 DLL 未加载。
 
-例如加载目录确定为游戏 `Data` 时，部署布局为：
+所有部署路径均相对于 `RA3.exe` 所在根目录：
 
 | 文件 | 游戏内位置 |
 | --- | --- |
-| UAL loader | `Data/d3d9.dll` |
-| UAL 配置 | `Data/global.ini` |
-| 桥接插件 | `Data/scripts/RA3InputBridge.asi` |
-| 运行时日志 | `Data/scripts/RA3InputBridge.log` |
+| UAL loader | `./d3d9.dll` |
+| UAL 配置 | `./global.ini` |
+| 桥接插件 | `./scripts/RA3InputBridge.asi` |
+| 运行时日志 | `./scripts/RA3InputBridge.log` |
 
-D3D9 在本版只负责把 ASI 加载进游戏。桥接的鼠标输入仍通过游戏原生输入泵与队列转发。UAL 源码与 PE 导出表已静态确认支持 D3D9；这台机器上的完整加载链仍需游戏内实测。
+当前本机游戏根目录为 `C:\Program Files (x86)\Steam\steamapps\common\Command and Conquer Red Alert 3`。运行时日志按 ASI 自身所在目录写入，因此正确部署后位于该根目录的 `scripts\RA3InputBridge.log`。迁移时把此前为本项目放入 `Data` 的 loader、配置和 ASI 移到游戏目录外备份。
+
+D3D9 在本版只负责把 ASI 加载进游戏。桥接的鼠标输入仍通过游戏原生输入泵与队列转发。Loader 与插件目录位置已经由用户实测确认；管道握手和输入效果仍需逐项验收。
 
 ASI 通过 `InitializeASI` 启动工作线程，`DllMain` 不安装 hook。模块初始化后固定驻留至进程退出；**首版没有热卸载**，替换插件前退出游戏。卸载时移走新增加的 ASI/loader，按备份恢复已有文件。
 

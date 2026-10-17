@@ -28,7 +28,7 @@ UAL Win32 NoPDB ZIP 发布资产的 SHA-256：
 | `Ultimate-ASI-Loader-NoPDB.zip` | `14b3a1ad018899571ac9aa01482977f3c6d49e6cba99f552d01c5acacd1315e1`，与上述发布资产摘要一致。 |
 | 包内 `dinput8.dll` | `ec2f4824eca58dd40f425756a4a7cec77b8e381f21d11d7c846ec4b339b617ab`，PE Machine `0x014c`（x86）。 |
 
-把这两个原始 ZIP 放进 `downloads/` 后，本机执行 `scripts/Prepare-Dependencies.ps1` 即可校验并准备依赖。Loader 会另存为 `downloads/ual-win32/d3d9.dll`，原始 ZIP 保留。MinHook 摘要是本次收到文件的实测值，不宣称为上游签名或上游发布的摘要。此步骤不验证游戏实际加载效果。
+把这两个原始 ZIP 放进 `downloads/` 后，本机执行 `scripts/Prepare-Dependencies.ps1` 即可校验并准备依赖。Loader 会另存为 `downloads/ual-win32/d3d9.dll`，原始 ZIP 保留。MinHook 摘要是本次收到文件的实测值，不宣称为上游签名或上游发布的摘要。准备好的 `d3d9.dll` 部署到 `RA3.exe` 所在游戏根目录；`global.ini` 和手动创建的 `scripts` 也位于该根目录。此步骤不验证游戏实际加载效果。
 
 ## 需要参考的源代码
 
@@ -38,9 +38,9 @@ UAL Win32 NoPDB ZIP 发布资产的 SHA-256：
 | Ultimate ASI Loader v9.7.4 | https://github.com/ThirteenAG/Ultimate-ASI-Loader/archive/refs/tags/v9.7.4.zip | `source/dllmain.cpp`：延迟加载、`InitializeASI` 调用与 `d3d9.dll` 转发。仅参考，不参与本项目编译。 |
 | RA3MCP 本项目 | https://github.com/STanJK/RA3MCP | `native/src/bridge.cpp`、`controller/src/lib.rs` 和 `controller/src/main.rs`。 |
 
-UAL 源码已从用户提供的加密外层 ZIP 解出；内层 `Ultimate-ASI-Loader-9.7.4.zip` 的实测 SHA-256 为 `d3a1844984abe8b05eb64f7993a654ece0e97f27bbe4c096e17c700d017b834f`，CRC 检查正常。静态检查 `source/dllmain.cpp` 确认了 `d3d9.dll` 转发分支、通过 `GetProcAddress` 调用无参数 `InitializeASI` 的路径，以及 `DontLoadFromDllMain` 延迟加载配置。源码仅供参考，不参与 RA3MCP 编译；实际进入游戏的加载效果仍待本机验证。
+UAL 源码已从用户提供的加密外层 ZIP 解出；内层 `Ultimate-ASI-Loader-9.7.4.zip` 的实测 SHA-256 为 `d3a1844984abe8b05eb64f7993a654ece0e97f27bbe4c096e17c700d017b834f`，CRC 检查正常。静态检查 `source/dllmain.cpp` 确认了 `d3d9.dll` 转发分支、通过 `GetProcAddress` 调用无参数 `InitializeASI` 的路径，以及 `DontLoadFromDllMain` 延迟加载配置。源码仅供参考，不参与 RA3MCP 编译；用户已多次实测确认 loader 与 `scripts` 必须部署在 `RA3.exe` 所在根目录；管道与输入效果仍待验收。
 
-已静态检查同一 Win32 loader 的 PE 导出表，确认存在 `Direct3DCreate9` 与 `Direct3DCreate9Ex`；`source/dllmain.cpp` 的 D3D9 分支默认转发系统库。当前部署使用 D3D9，移出已有图形代理，不要求与 ReShade 共存。实际进入游戏的加载效果仍待本机验证。
+已静态检查同一 Win32 loader 的 PE 导出表，确认存在 `Direct3DCreate9` 与 `Direct3DCreate9Ex`；`source/dllmain.cpp` 的 D3D9 分支默认转发系统库。当前部署使用 D3D9，移出已有图形代理，不要求与 ReShade 共存。用户已多次实测确认 loader 与 `scripts` 必须部署在 `RA3.exe` 所在根目录；管道与输入效果仍待验收。
 
 不需要下载 ReShade 源码、整个 DirectX SDK 或 MinHook 的预编译 lib/bin。首版不 hook D3D9，不调用 D3DX；当前所需 Windows API 来自 Windows SDK。
 
