@@ -1,0 +1,285 @@
+#include <windows.h>
+#include <bcrypt.h>
+#include <mmsystem.h>
+#include <MinHook.h>
+#include "protocol.hpp"
+#include "work_queue.hpp"
+#include <array>
+#include <atomic>
+#include <cstdio>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+static_assert(sizeof(void*) == 4, "The game input bridge requires x86");
+
+// One verified executable only. These are RVAs, never live absolute addresses.
+namespace {
+constexpr uintptr_t kIdaBase = 0x400000;
+constexpr uintptr_t kPumpRva = 0x5416C0 - kIdaBase;
+constexpr uintptr_t kMoveRva = 0x8B03F0 - kIdaBase;
+constexpr uintptr_t kDownRva = 0x8B0450 - kIdaBase;
+constexpr uintptr_t kUpRva = 0x8B04C0 - kIdaBase;
+constexpr uintptr_t kWheelRva = 0x8B0530 - kIdaBase;
+constexpr uintptr_t kWindowRva = 0xCD5C10 - kIdaBase;
+constexpr char kSha256[] = "dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0";
+using Pump = int (__thiscall*)(void*);
+using Move = int (__thiscall*)(void*, int, int, uint32_t);
+using Button = int (__thiscall*)(void*, int, int, int, uint32_t);
+using Wheel = int (__thiscall*)(void*, int, int, int);
+Pump g_original = nullptr;
+Move g_move = nullptr;
+Button g_down = nullptr, g_up = nullptr;
+Wheel g_wheel = nullptr;
+uintptr_t g_base = 0;
+HMODULE g_ownModule = nullptr;
+std::atomic<bool> g_started{false}, g_releaseRequested{false};
+std::atomic<uint32_t> g_pump{0};
+std::atomic<uint8_t> g_held{0};
+int g_x = 0, g_y = 0; // Only the game input thread touches these coordinates.
+
+enum class Phase { Queued, Executing, Done, Cancelled };
+struct Request {
+    ra3::Command command;
+    HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::atomic<Phase> phase{Phase::Queued};
+    ra3::Status status = ra3::Status::Pumped;
+    uint32_t detail = 0, pump = 0;
+    uint8_t held = 0;
+    explicit Request(ra3::Command c) : command(c) {}
+    ~Request() { if(done) CloseHandle(done); }
+};
+std::mutex g_queueMutex;
+ra3::WorkQueue<std::shared_ptr<Request>, 64> g_queue;
+
+std::wstring modulePath(HMODULE module) {
+    std::vector<wchar_t> path(32768);
+    const DWORD n = GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size()));
+    if(!n || n >= path.size()) return {};
+    return {path.data(), n};
+}
+// Worker thread only. No file or pipe operations run in the input hook.
+void log(const char* message) {
+    OutputDebugStringA(message);
+    OutputDebugStringA("\n");
+    auto path = modulePath(g_ownModule);
+    const auto slash = path.find_last_of(L"\\/");
+    if(slash == std::wstring::npos) return;
+    path.resize(slash + 1);
+    path += L"RA3InputBridge.log";
+    HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if(file == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    const std::string line = std::string(message) + "\r\n";
+    WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    CloseHandle(file);
+}
+
+bool checkExecutable() {
+    const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(g_base);
+    if(dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) return false;
+    const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(g_base + dos->e_lfanew);
+    if(nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+       nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+       nt->OptionalHeader.SizeOfImage <= kWindowRva + sizeof(HWND)) return false;
+    const auto path = modulePath(nullptr);
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if(file == INVALID_HANDLE_VALUE) return false;
+    BCRYPT_ALG_HANDLE provider = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    std::array<unsigned char, 32> digest{};
+    bool ok = BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0;
+    if(ok) ok = BCryptCreateHash(provider, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+    std::array<unsigned char, 65536> bytes{};
+    while(ok) {
+        DWORD n = 0;
+        if(!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &n, nullptr)) { ok = false; break; }
+        if(!n) break;
+        ok = BCryptHashData(hash, bytes.data(), n, 0) >= 0;
+    }
+    if(ok) ok = BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
+    if(hash) BCryptDestroyHash(hash);
+    if(provider) BCryptCloseAlgorithmProvider(provider, 0);
+    CloseHandle(file);
+    constexpr char hex[] = "0123456789abcdef";
+    std::array<char, 65> result{};
+    for(size_t i = 0; i < digest.size(); ++i) {
+        result[i * 2] = hex[digest[i] >> 4]; result[i * 2 + 1] = hex[digest[i] & 15];
+    }
+    return ok && std::string(result.data()) == kSha256;
+}
+
+void releaseButtons(void* mouse) {
+    const auto mask = g_held.load(std::memory_order_relaxed);
+    for(int b = 0; b < 3; ++b)
+        if(mask & (1u << b)) g_up(mouse, b, g_x, g_y, timeGetTime());
+    g_held.store(0, std::memory_order_relaxed);
+}
+
+void execute(Request& request, void* mouse) {
+    const auto& c = request.command;
+    if(c.op == ra3::Op::Ping) return;
+    if(c.op == ra3::Op::ReleaseAll) { releaseButtons(mouse); return; }
+    const HWND window = *reinterpret_cast<const HWND*>(g_base + kWindowRva);
+    RECT rect{};
+    if(!window || !GetClientRect(window, &rect)) {
+        request.status = ra3::Status::NotReady; request.detail = 1; return;
+    }
+    if(c.x >= rect.right || c.y >= rect.bottom) {
+        request.status = ra3::Status::Invalid; request.detail = 2; return;
+    }
+    g_x = c.x; g_y = c.y;
+    auto held = g_held.load(std::memory_order_relaxed);
+    switch(c.op) {
+    case ra3::Op::Move: g_move(mouse, c.x, c.y, timeGetTime()); break;
+    case ra3::Op::Down:
+        if(held & (1u << c.button)) { request.status = ra3::Status::Invalid; request.detail = 3; break; }
+        g_down(mouse, c.button, c.x, c.y, timeGetTime());
+        held = static_cast<uint8_t>(held | (1u << c.button)); break;
+    case ra3::Op::Up:
+        // Do not release a button the bridge never pressed.
+        if(!(held & (1u << c.button))) { request.status = ra3::Status::Invalid; request.detail = 4; break; }
+        g_up(mouse, c.button, c.x, c.y, timeGetTime());
+        held = static_cast<uint8_t>(held & ~(1u << c.button)); break;
+    case ra3::Op::Wheel: g_wheel(mouse, c.x, c.y, c.value); break;
+    default: break;
+    }
+    g_held.store(held, std::memory_order_relaxed);
+}
+
+int __fastcall hookedPump(void* self, void*) {
+    const uint32_t pump = g_pump.fetch_add(1, std::memory_order_relaxed) + 1;
+    void* mouse = static_cast<unsigned char*>(self) + 0x38;
+    if(g_releaseRequested.exchange(false, std::memory_order_acq_rel)) releaseButtons(mouse);
+    std::array<std::shared_ptr<Request>, 32> pending{};
+    size_t count = 0;
+    // Never wait for the pipe thread's queue lock on the game thread.
+    if(g_queueMutex.try_lock()) {
+        std::shared_ptr<Request> item;
+        while(count < pending.size() && g_queue.pop(item)) pending[count++] = std::move(item);
+        g_queueMutex.unlock();
+    }
+    for(size_t i = 0; i < count; ++i) {
+        auto expected = Phase::Queued;
+        if(pending[i]->phase.compare_exchange_strong(expected, Phase::Executing))
+            execute(*pending[i], mouse);
+    }
+    const int result = g_original(self); // The original drains the injected mouse queue.
+    for(size_t i = 0; i < count; ++i) {
+        auto& r = *pending[i];
+        if(r.phase.load() != Phase::Executing) continue;
+        r.pump = pump; r.held = g_held.load(std::memory_order_relaxed);
+        r.phase.store(Phase::Done, std::memory_order_release);
+        SetEvent(r.done);
+    }
+    return result;
+}
+
+bool readPacket(HANDLE pipe, ra3::Packet& packet) {
+    size_t offset = 0;
+    while(offset < packet.size()) {
+        DWORD n = 0;
+        if(!ReadFile(pipe, packet.data() + offset, static_cast<DWORD>(packet.size() - offset), &n, nullptr) || !n) return false;
+        offset += n;
+    }
+    return true;
+}
+bool writePacket(HANDLE pipe, const ra3::Packet& packet) {
+    size_t offset = 0;
+    while(offset < packet.size()) {
+        DWORD n = 0;
+        if(!WriteFile(pipe, packet.data() + offset, static_cast<DWORD>(packet.size() - offset), &n, nullptr) || !n) return false;
+        offset += n;
+    }
+    return true;
+}
+ra3::Packet dispatch(const ra3::Packet& packet) {
+    ra3::Command command;
+    const auto sequence = ra3::read32(packet.data() + 8);
+    const auto failure = [sequence](ra3::Status status, uint32_t detail = 0) {
+        return ra3::ack(sequence, status, g_pump.load(), g_held.load(), detail);
+    };
+    if(!ra3::decode(packet, command)) return failure(ra3::Status::Invalid);
+    auto request = std::make_shared<Request>(command);
+    if(!request->done) return failure(ra3::Status::NotReady, GetLastError());
+    {
+        std::lock_guard<std::mutex> guard(g_queueMutex);
+        if(!g_queue.push(request)) return failure(ra3::Status::Busy);
+    }
+    const DWORD wait = WaitForSingleObject(request->done, 3000);
+    if(request->phase.load(std::memory_order_acquire) == Phase::Done)
+        return ra3::ack(sequence, request->status, request->pump, request->held, request->detail);
+    auto expected = Phase::Queued;
+    const bool cancelled = request->phase.compare_exchange_strong(expected, Phase::Cancelled);
+    // A timeout during execution has an unknown outcome. Release on the next pump;
+    // the controller must not automatically retry clicks or drags.
+    g_releaseRequested.store(true, std::memory_order_release);
+    return failure(ra3::Status::Timeout, wait == WAIT_FAILED ? GetLastError() : (cancelled ? 1u : 2u));
+}
+void serve() {
+    const std::wstring name = L"\\\\.\\pipe\\RA3MCP." + std::to_wstring(GetCurrentProcessId());
+    char message[128]{};
+    sprintf_s(message, "Ready: \\\\.\\pipe\\RA3MCP.%lu (24-byte protocol v1)", GetCurrentProcessId());
+    bool announced = false;
+    for(;;) {
+        HANDLE pipe = CreateNamedPipeW(name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1, 4096, 4096, 0, nullptr);
+        if(pipe == INVALID_HANDLE_VALUE) { log("Pipe creation failed; restart the game after checking the pipe name."); return; }
+        try {
+            if(!announced) { log(message); announced = true; }
+            if(ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED) {
+                ra3::Packet packet{};
+                while(readPacket(pipe, packet)) {
+                    if(!writePacket(pipe, dispatch(packet))) break;
+                }
+            }
+        } catch(...) {
+            g_releaseRequested.store(true, std::memory_order_release);
+            DisconnectNamedPipe(pipe);
+            CloseHandle(pipe);
+            throw;
+        }
+        g_releaseRequested.store(true, std::memory_order_release);
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    }
+}
+DWORD WINAPI bootstrap(void*) {
+    try {
+        g_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        if(!checkExecutable()) { log("Refused: executable architecture/hash differs from the verified ra3_1.12.game."); return 1; }
+        g_move = reinterpret_cast<Move>(g_base + kMoveRva);
+        g_down = reinterpret_cast<Button>(g_base + kDownRva);
+        g_up = reinterpret_cast<Button>(g_base + kUpRva);
+        g_wheel = reinterpret_cast<Wheel>(g_base + kWheelRva);
+        auto target = reinterpret_cast<LPVOID>(g_base + kPumpRva);
+        if(MH_Initialize() != MH_OK) { log("MinHook initialization failed."); return 2; }
+        if(MH_CreateHook(target, reinterpret_cast<LPVOID>(&hookedPump), reinterpret_cast<LPVOID*>(&g_original)) != MH_OK) {
+            log("Input pump hook creation failed."); MH_Uninitialize(); return 3;
+        }
+        if(MH_EnableHook(target) != MH_OK) {
+            log("Input pump hook enable failed."); MH_RemoveHook(target); MH_Uninitialize(); return 4;
+        }
+        // Resident until process exit. Even a later pipe failure must not unmap the hook.
+        serve();
+    } catch(...) { log("Bridge worker failed; restart the game before retrying."); }
+    g_releaseRequested.store(true, std::memory_order_release);
+    return 0;
+}
+}
+
+// UAL calls this after loading the ASI when DontLoadFromDllMain=1.
+// Export spelling is fixed by bridge.def for MSVC x86.
+extern "C" void __cdecl InitializeASI() {
+    if(g_started.exchange(true)) return;
+    if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(&InitializeASI), &g_ownModule)) return;
+    HANDLE thread = CreateThread(nullptr, 0, &bootstrap, nullptr, 0, nullptr);
+    if(thread) CloseHandle(thread);
+    else OutputDebugStringA("RA3InputBridge: worker thread creation failed.\n");
+}
+BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }

@@ -1,0 +1,15 @@
+RA3MCP
+Copyright 2026 STanJK and contributors
+
+This project is licensed under Apache-2.0; see LICENSE.
+
+MinHook v1.3.4 is an external, statically linked build dependency distributed
+under its BSD 2-Clause license. Its source is downloaded separately.
+The staging script copies MinHook's LICENSE.txt alongside built artifacts.
+https://github.com/TsudaKageyu/minhook/tree/v1.3.4
+
+Ultimate ASI Loader v9.7.4 is an independently downloaded loader/reference
+project. Its license and distribution notices remain with that project.
+https://github.com/ThirteenAG/Ultimate-ASI-Loader/tree/v9.7.4
+
+No game executable or game asset is included in this repository.

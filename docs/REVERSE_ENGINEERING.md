@@ -1,0 +1,53 @@
+# 红警 3 1.12 输入入口记录
+
+以下来自用户授权连接的 IDA 数据库及函数反汇编检查，记录日期 2026-10-17。只适用于本文哈希匹配的 x86 PE，不可直接用于其他补丁、免安装修改版或其他架构。
+
+| 项目 | 值 |
+| --- | --- |
+| 文件 | `ra3_1.12.game` |
+| IDA image base | `0x400000` |
+| SHA-256 | `dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0` |
+| MD5 | `97519b4ea1e9fb5ad0d53193d674b725` |
+| 架构 | PE32 / x86 |
+
+运行时地址一律为 `GetModuleHandleW(nullptr) + RVA`。桥接模块先核对主模块文件哈希，再安装 hook。哈希检测是版本约束，不代表运行时内存从未被其他插件修改。
+
+## 首版直接使用的函数
+
+所有表内函数返回 `int`，`self` 由 ECX 传入。这里的名称为分析用途，不是原程序公开符号。
+
+| 分析名 | IDA VA | RVA | x86 签名/栈清理 |
+| --- | --- | --- | --- |
+| InputPump | `0x5416C0` | `0x1416C0` | `int __thiscall(void* inputManager)`，无显式参数 |
+| MouseQueueMove | `0x8B03F0` | `0x4B03F0` | `int __thiscall(void* mouse, int x, int y, uint32_t time)`，`ret 0xC` |
+| MouseQueueDown | `0x8B0450` | `0x4B0450` | `int __thiscall(void* mouse, int button, int x, int y, uint32_t time)`，`ret 0x10` |
+| MouseQueueUp | `0x8B04C0` | `0x4B04C0` | 同 Down，`ret 0x10` |
+| MouseQueueWheel | `0x8B0530` | `0x4B0530` | `int __thiscall(void* mouse, int x, int y, int ticks)`，`ret 0xC` |
+
+MinHook detour 采用 `int __fastcall hookedPump(void* self, void* unusedEdx)`，匹配原函数 ECX 及栈布局；原 trampoline 保持 `__thiscall`。
+
+## 对象与调用次序依据
+
+- 输入循环保存传入的 ECX 为 `self`；鼠标对象位于 `self + 0x38`。因此 hook 使用当前实例中的嵌入对象，不缓存全局鼠标指针。
+- 原循环在处理消息前后都调用队列消费函数 `0x8B2D60`，对象为 `self + 0x28`。
+- 循环处理 `PeekMessage/TranslateMessage/DispatchMessage`，最后将 `self + 0x38` 传给鼠标位置发射函数 `0x8B3200`，sink 来自 `self + 0x24`。
+- 首版在原输入循环前调用已有 enqueue 函数，让原循环消费消息；不直接调用框选、点击目标判定或玩法命令函数。
+- 全局游戏 HWND 槽位：IDA VA `0xCD5C10`，RVA `0x8D5C10`，只用于客户区边界校验。
+- 观测到的鼠标相关全局槽位还有 `0xCE009C`、`0xCEE414`；首版不依赖它们的初始化时机。
+
+按钮编号为 0 左、1 右、2 中；Wheel 参数为刻度而非 Win32 `WHEEL_DELTA=120`。事件时间使用游戏也导入的 `timeGetTime()`。
+
+## 加载选择
+
+目标导入表包含 Direct3D9 的 `Direct3DCreate9`，也包含 WinMM 的 `timeBeginPeriod/timeEndPeriod/timeGetTime`。选择 UAL 的 `winmm.dll` 转发加载路径，给已有 ReShade 的 `d3d9.dll` 留出位置。
+
+UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 `InitializeASI` 导出查找/调用、`DontLoadFromDllMain` 配置，以及 WinMM 真正系统库的转发路径。具体搜索目录和与用户现有插件的兼容性必须本机实测。
+
+## 尚待本机验证
+
+1. MSVC x86 构建及导出表中的未修饰 `InitializeASI`。
+2. 目标游戏加载 `Data/winmm.dll`，UAL 延迟加载 `scripts/RA3InputBridge.asi`。
+3. 原循环消费合成事件后的实际 UI 点击、地图移动命令与拖动框选效果。
+4. ReShade 共存、窗口缩放/分辨率变更、实体鼠标同时输入的行为。
+
+静态分析给出了调用约定和可用注入层，但尚未证明实时输入语义完全符合预期。若内置鼠标位置在后续原生采样中被覆盖，需要本地记录和调整输入层，不能靠静态报告宣称完成。

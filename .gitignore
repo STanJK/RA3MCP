@@ -1,0 +1,11 @@
+/build/
+/target/
+/dist/
+/third_party/minhook/
+/downloads/
+*.log
+*.pdb
+*.asi
+*.dll
+*.exe
+local-build.local.yaml

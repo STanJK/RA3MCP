@@ -1,0 +1,5 @@
+[GlobalSets]
+LoadPlugins=1
+DontLoadFromDllMain=1
+LoadFromScriptsOnly=1
+LoadRecursively=0
