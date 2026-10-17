@@ -39,11 +39,17 @@ MinHook detour 采用 `int __fastcall hookedPump(void* self, void* unusedEdx)`�
 
 ## 加载选择
 
-目标导入表包含 Direct3D9 的 `Direct3DCreate9`，也包含 WinMM 的 `timeBeginPeriod/timeEndPeriod/timeGetTime`。2026-10-17 本机尝试 WinMM 后未得到桥接加载日志；该现象还不足以判定底层原因。用户已确认 D3D9 代理可加载，当前改用 UAL `d3d9.dll`，不要求与 ReShade 共存。
+目标导入表包含 Direct3D9 的 `Direct3DCreate9`，也包含 WinMM 的 `timeBeginPeriod/timeEndPeriod/timeGetTime`。2026-10-17 本机尝试 WinMM 后未得到桥接加载日志；该现象还不足以判定底层原因。用户随后确认根目录的 D3D9 和 WinMM 代理均可加载，路径而非代理名称是本轮实测差异；当前脚本默认准备 UAL `d3d9.dll`，不要求与 ReShade 共存。
 
 UAL v9.7.4 的 `source/dllmain.cpp` 确认包含 D3D9 转发、`InitializeASI` 导出查找/调用与 `DontLoadFromDllMain` 配置。提供的 Win32 loader PE 导出表确有 `Direct3DCreate9` 与 `Direct3DCreate9Ex`。2026-10-17 用户多次实测确认加载目录必须为包含 `RA3.exe` 的游戏根目录：`./d3d9.dll`、`./global.ini`、`./scripts/RA3InputBridge.asi`；日志写入 `./scripts/RA3InputBridge.log`。主模块哈希校验仍读取实际运行的 `Data/ra3_1.12.game`。
 
 本机 MSVC Win32 Release 已成功链接 ASI，CTest 1/1、Rust 测试 3/3 通过。`bridge.def` 直接导出 `InitializeASI`，修复了原下划线别名触发的链接错误；PE 导出表拼写尚需独立检查。
+
+## 宿主与校验日志
+
+启动器和游戏是独立进程。桥接记录当前主模块路径与 ASI 路径，每行带 PID；宿主名为 `RA3.exe` 时明确跳过，不对启动器应用游戏 RVA。其他宿主继续执行原 PE32/x86、映像范围和固定 SHA-256 校验。校验日志分别报告映像问题、主文件读取 Win32 错误、BCrypt NTSTATUS，以及实际和预期 SHA-256。
+
+父进程跳过不会把 ASI 转发到子进程。只有对应 `.game` PID 的宿主日志才能证明游戏初始化了桥接；只有对应 PID 的 Ready 日志才能证明管道已创建。
 
 ## 尚待本机验证
 

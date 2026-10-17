@@ -71,6 +71,20 @@ D3D9 在本版只负责把 ASI 加载进游戏。桥接的鼠标输入仍通过�
 
 ASI 通过 `InitializeASI` 启动工作线程，`DllMain` 不安装 hook。模块初始化后固定驻留至进程退出；**首版没有热卸载**，替换插件前退出游戏。卸载时移走新增加的 ASI/loader，按备份恢复已有文件。
 
+## 加载进程与版本诊断
+
+UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。当前准备脚本默认生成 `d3d9.dll`；如使用已验证的 WinMM 路径，可将同一个已校验的 loader 改名为 `winmm.dll`。同一轮只部署一种 UAL 代理，配置和 `scripts` 始终位于 `RA3.exe` 根目录。
+
+启动器 `RA3.exe` 和 `Data/ra3_1.12.game` 是独立进程。ASI 被启动器加载后会记录 `Skipped launcher RA3.exe` 并跳过全部游戏 Hook；这不会替子进程加载 DLL。游戏进程需要自行加载根目录的 UAL 和 ASI。
+
+`scripts/RA3InputBridge.log` 每行带 `[pid=...]`，每次初始化记录宿主可执行文件与 ASI 的完整路径。游戏校验还会记录 PE 架构、映像大小、实际与预期 SHA-256；文件读取和 BCrypt 失败分别给出 Win32 error 或 NTSTATUS。
+
+- 只有 `Host executable: ...RA3.exe` 和 `Skipped launcher`：当前日志只证明启动器初始化了桥接，还需确认游戏子进程是否加载代理。
+- 有 `Host executable: ...Dataa3_1.12.game` 且出现哈希不匹配：ASI 已进入游戏进程，继续核对实际二进制版本；保留原版本约束。
+- 出现文件读取或 BCrypt 错误：按日志中的具体错误排查，不能归结为版本不符。
+- 游戏 PID 出现 `Ready: \\.\pipe\RA3MCP.<PID>`：桥接管道已创建，再按下面步骤测试输入。
+
+
 ## 点击和拖动
 
 用日志里的游戏 PID 替换下面的 `12345`。坐标是游戏窗口客户区像素；不包含标题栏和窗口边框。

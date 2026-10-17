@@ -59,10 +59,20 @@ std::wstring modulePath(HMODULE module) {
     if(!n || n >= path.size()) return {};
     return {path.data(), n};
 }
+std::string utf8(const std::wstring& text) {
+    if(text.empty()) return "<unavailable>";
+    const int count = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if(!count) return "<path conversion failed>";
+    std::string result(static_cast<size_t>(count), '\0');
+    if(!WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                            result.data(), count, nullptr, nullptr)) return "<path conversion failed>";
+    return result;
+}
 // Worker thread only. No file or pipe operations run in the input hook.
 void log(const char* message) {
-    OutputDebugStringA(message);
-    OutputDebugStringA("\n");
+    const std::string line = "[pid=" + std::to_string(GetCurrentProcessId()) + "] " + message + "\r\n";
+    OutputDebugStringA(line.c_str());
     auto path = modulePath(g_ownModule);
     const auto slash = path.find_last_of(L"\\/");
     if(slash == std::wstring::npos) return;
@@ -72,44 +82,82 @@ void log(const char* message) {
                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if(file == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
-    const std::string line = std::string(message) + "\r\n";
     WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
     CloseHandle(file);
 }
+void logWin32Error(const char* action, DWORD error) {
+    char message[256]{};
+    sprintf_s(message, "Refused: %s failed; Win32 error=%lu.", action, error);
+    log(message);
+}
+bool checkHashStatus(const char* action, NTSTATUS status) {
+    if(status >= 0) return true;
+    char message[256]{};
+    sprintf_s(message, "Refused: %s failed; NTSTATUS=0x%08lX.",
+              action, static_cast<unsigned long>(status));
+    log(message);
+    return false;
+}
 
-bool checkExecutable() {
+bool checkExecutable(const std::wstring& path) {
     const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(g_base);
-    if(dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) return false;
+    if(dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) {
+        log("Refused: invalid DOS/PE header in the host main module."); return false;
+    }
     const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(g_base + dos->e_lfanew);
+    char image[192]{};
+    sprintf_s(image, "Host image: machine=0x%04X magic=0x%04X size=0x%08lX.",
+              static_cast<unsigned int>(nt->FileHeader.Machine),
+              static_cast<unsigned int>(nt->OptionalHeader.Magic), nt->OptionalHeader.SizeOfImage);
+    log(image);
     if(nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
-       nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
-       nt->OptionalHeader.SizeOfImage <= kWindowRva + sizeof(HWND)) return false;
-    const auto path = modulePath(nullptr);
+       nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+        log("Refused: host main module is not a valid PE32/x86 image."); return false;
+    }
+    if(nt->OptionalHeader.SizeOfImage <= kWindowRva + sizeof(HWND)) {
+        log("Refused: host image is too small for the verified game RVAs."); return false;
+    }
+    if(path.empty()) {
+        log("Refused: could not determine the host executable path."); return false;
+    }
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                               OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if(file == INVALID_HANDLE_VALUE) return false;
+    if(file == INVALID_HANDLE_VALUE) {
+        logWin32Error("CreateFileW(host executable)", GetLastError()); return false;
+    }
     BCRYPT_ALG_HANDLE provider = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
     std::array<unsigned char, 32> digest{};
-    bool ok = BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0;
-    if(ok) ok = BCryptCreateHash(provider, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+    bool ok = checkHashStatus("BCryptOpenAlgorithmProvider",
+                               BCryptOpenAlgorithmProvider(&provider, BCRYPT_SHA256_ALGORITHM, nullptr, 0));
+    if(ok) ok = checkHashStatus("BCryptCreateHash", BCryptCreateHash(provider, &hash, nullptr, 0, nullptr, 0, 0));
     std::array<unsigned char, 65536> bytes{};
     while(ok) {
         DWORD n = 0;
-        if(!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &n, nullptr)) { ok = false; break; }
+        if(!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &n, nullptr)) {
+            logWin32Error("ReadFile(host executable)", GetLastError()); ok = false; break;
+        }
         if(!n) break;
-        ok = BCryptHashData(hash, bytes.data(), n, 0) >= 0;
+        ok = checkHashStatus("BCryptHashData", BCryptHashData(hash, bytes.data(), n, 0));
     }
-    if(ok) ok = BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
+    if(ok) ok = checkHashStatus("BCryptFinishHash",
+                                 BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0));
     if(hash) BCryptDestroyHash(hash);
     if(provider) BCryptCloseAlgorithmProvider(provider, 0);
     CloseHandle(file);
+    if(!ok) return false;
     constexpr char hex[] = "0123456789abcdef";
     std::array<char, 65> result{};
     for(size_t i = 0; i < digest.size(); ++i) {
         result[i * 2] = hex[digest[i] >> 4]; result[i * 2 + 1] = hex[digest[i] & 15];
     }
-    return ok && std::string(result.data()) == kSha256;
+    log((std::string("Host SHA-256: ") + result.data()).c_str());
+    log((std::string("Expected SHA-256: ") + kSha256).c_str());
+    if(std::string(result.data()) != kSha256) {
+        log("Refused: host executable SHA-256 does not match the verified ra3_1.12.game."); return false;
+    }
+    log("Verified game executable; installing the input pump hook.");
+    return true;
 }
 
 void releaseButtons(void* mouse) {
@@ -251,7 +299,19 @@ void serve() {
 DWORD WINAPI bootstrap(void*) {
     try {
         g_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        if(!checkExecutable()) { log("Refused: executable architecture/hash differs from the verified ra3_1.12.game."); return 1; }
+        const auto host = modulePath(nullptr);
+        log("Starting RA3InputBridge with host diagnostics.");
+        log((std::string("Host executable: ") + utf8(host)).c_str());
+        log((std::string("Bridge module: ") + utf8(modulePath(g_ownModule))).c_str());
+        const auto slash = host.find_last_of(L"\\/");
+        const auto name = host.substr(slash == std::wstring::npos ? 0 : slash + 1);
+        // UAL may load this ASI in both the launcher and its game child.
+        // Never apply game RVAs to RA3.exe. Each process initializes independently.
+        if(lstrcmpiW(name.c_str(), L"RA3.exe") == 0) {
+            log("Skipped launcher RA3.exe; no hooks or pipe installed in this process.");
+            return 0;
+        }
+        if(!checkExecutable(host)) return 1;
         g_move = reinterpret_cast<Move>(g_base + kMoveRva);
         g_down = reinterpret_cast<Button>(g_base + kDownRva);
         g_up = reinterpret_cast<Button>(g_base + kUpRva);
