@@ -47,14 +47,14 @@ RA3MCP:
 
     native-configure:
       description: Configure RA3InputBridge for Visual Studio 2022 Win32 with local MinHook
-      program: cmake.exe
+      program: 'C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe'
       args:
         - -S
         - .
         - -B
         - build/win32
         - -G
-        - Visual Studio 17 2022
+        - Visual Studio 18 2026
         - -A
         - Win32
         - -DMINHOOK_DIR:PATH=C:/STanJK/Development/RA3MCP/third_party/minhook
@@ -62,7 +62,7 @@ RA3MCP:
 
     native-build:
       description: Build RA3InputBridge and native tests in Release
-      program: cmake.exe
+      program: 'C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe'
       args:
         - --build
         - build/win32
@@ -71,7 +71,7 @@ RA3MCP:
 
     native-test:
       description: Run native CTest suite in Release
-      program: ctest.exe
+      program: 'C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\ctest.exe'
       args:
         - --test-dir
         - build/win32
@@ -118,7 +118,7 @@ RA3MCP:
 `native-configure` 等价于直接执行：
 
 ```text
-cmake -S . -B build/win32 -G "Visual Studio 17 2022" -A Win32 ^
+"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe" -S . -B build/win32 -G "Visual Studio 18 2026" -A Win32 ^
   -DMINHOOK_DIR:PATH=C:/STanJK/Development/RA3MCP/third_party/minhook ^
   -DRA3_BUILD_BRIDGE=ON
 ```
