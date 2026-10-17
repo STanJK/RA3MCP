@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 const MODERN: &str = "2026-07-28";
-const LEGACY: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+const LEGACY: &[&str] = &["2025-11-25", "2025-06-18"];
 const MAX_FRAME: usize = 1_048_576;
 const MAX_PENDING: usize = 64;
 const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
@@ -44,7 +44,8 @@ fn write(output: &Output, value: &Json) -> io::Result<()> {
 fn id_key(value: &Json) -> Option<String> {
     match value {
         Json::String(_) => Some(value.encode()),
-        Json::Number(n) if !n.contains(['.', 'e', 'E']) => Some(value.encode()),
+        Json::Number(n) => value.integer().map(|v| format!("number:{v}"))
+            .or_else(|| (!n.contains(['.', 'e', 'E'])).then(|| format!("number:{n}"))),
         _ => None,
     }
 }
@@ -213,6 +214,11 @@ impl<B: Backend> Server<B> {
             if meta.and_then(|v| v.get(CAPS_KEY)).and_then(Json::fields).is_none() {
                 return Some(error(id, -32602, "clientCapabilities metadata is required and must be an object", None));
             }
+            if let Some(client) = meta.and_then(|v| v.get("io.modelcontextprotocol/clientInfo")) {
+                if client.get("name").and_then(Json::text).is_none() || client.get("version").and_then(Json::text).is_none() {
+                    return Some(error(id, -32602, "clientInfo metadata requires string name and version fields", None));
+                }
+            }
         }
         if method == "initialize" && !modern {
             if self.legacy.is_some() { return Some(error(id, -32600, "Already initialized", None)); }
@@ -237,11 +243,7 @@ impl<B: Backend> Server<B> {
             "ping" => empty(),
             "tools/list" => {
                 if params.get("cursor").is_some() { return Some(error(id, -32602, "This fixed tool list has no pagination cursor", None)); }
-                let mut tools = self.tools.clone();
-                if !modern && matches!(self.legacy.as_deref(), Some("2024-11-05" | "2025-03-26")) {
-                    for tool in &mut tools { if let Json::Object(fields) = tool { fields.remove("outputSchema"); } }
-                }
-                object([("tools", Json::Array(tools))])
+                object([("tools", Json::Array(self.tools.clone()))])
             }
             "tools/call" => {
                 let Some(name) = params.get("name").and_then(Json::text) else { return Some(error(id, -32602, "tools/call requires a tool name", None)); };
@@ -249,7 +251,10 @@ impl<B: Backend> Server<B> {
                     return Some(error(id, -32602, &format!("Unknown tool: {name}"), None));
                 };
                 let args = params.get("arguments").cloned().unwrap_or_else(empty);
-                let pid = args.get("pid").and_then(Json::integer).and_then(|v| u32::try_from(v).ok()).filter(|v| *v != 0);
+                if args.fields().is_none() { return Some(error(id, -32602, "tools/call arguments must be an object", None)); }
+                let pid = if name == "ra3_list_instances" { None } else {
+                    args.get("pid").and_then(Json::integer).and_then(|v| u32::try_from(v).ok()).filter(|v| *v != 0)
+                };
                 let outcome = match parse_action(name, &args, definition) {
                     Ok((_, Action::Discover)) => self.backend.discover(),
                     Ok((Some(pid), action)) => self.backend.execute(pid, action, cancel),
@@ -257,11 +262,7 @@ impl<B: Backend> Server<B> {
                     Err(error) => Err(error),
                 };
                 let value = outcome.unwrap_or_else(|failure| failure.json(pid));
-                let mut reply = tool_result(value);
-                if !modern && matches!(self.legacy.as_deref(), Some("2024-11-05" | "2025-03-26")) {
-                    if let Json::Object(fields) = &mut reply { fields.remove("structuredContent"); }
-                }
-                reply
+                tool_result(value)
             }
             _ => return Some(error(id, -32601, &format!("Method not found: {method}"), None)),
         };

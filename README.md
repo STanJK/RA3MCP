@@ -1,15 +1,15 @@
 # RA3MCP
 
-红警 3 鼠标控制桥接首版：`RA3InputBridge.asi` 在游戏进程内转发输入，外部 Rust `ra3ctl.exe` 通过命名管道控制移动、点击、拖动与滚轮。项目当前是输入桥接基础，尚未提供 MCP server。
+红警 3 鼠标控制桥接：`RA3InputBridge.asi` 在游戏进程内转发输入，外部 Rust `ra3ctl.exe` 通过命名管道控制移动、点击、拖动与滚轮，同时提供原 CLI 和常驻 stdio MCP 服务。
 
-**状态：本机 MSVC Win32 Release 构建、CTest 和原控制器 Rust 测试已通过；游戏子进程加载和输入效果待验证。** 后续编译与测试仅通过用户本机 Toolhub 运行，远端只进行静态检查。尚不能把这份源码视为已验证的游戏插件。
+**状态：本机原生构建与测试通过，用户已确认游戏加载、CLI ping、点击和拖动有效；MCP 初版通过本机检查和模拟管道集成测试，最终补充修改待本机复验与 Release 构建。** 远端只编辑源码和静态检查；本机验证命令见 [MCP 接入规范](docs/MCP_TOOLHUB.md)。Toolhub 的代码、配置和注册由专门会话负责。
 
 ## 目标版本
 
 - 32 位 `ra3_1.12.game`，IDA image base `0x400000`。
 - 文件 SHA-256：`dc54c54aa40d48bf2605cd5616f01e19fb1b3859b9dbe03dfa6dc28e6921e4b0`。
 - 模块加载后先核对架构、映像范围、文件哈希；不匹配时记录日志并拒绝安装 hook。
-- 被控制和校验的进程为 `Data/ra3_1.12.game`；游戏进程的 Loader、配置和 `scripts` 位于 `Data`；当前成功实验同时保留了根目录副本，单目录初始化方式仍在验证。
+- 被控制和校验的进程为 `Data/ra3_1.12.game`；游戏进程的 Loader、配置和 `scripts` 位于 `Data`；当前采用已验证的根目录与 Data 双份部署，单目录初始化尝试未成功。
 
 地址、对象关系和调用约定见 [逆向记录](docs/REVERSE_ENGINEERING.md)。
 
@@ -65,7 +65,7 @@ Rust 无第三方 crate，脚本使用 `--locked --offline`。首次安装工具
 
 移出根目录副本后的跟踪已看到游戏 PID 40564 加载 `Data/winmm.dll` 和系统 WinMM，但没有映射 ASI。因此不能把“代理已加载”当成“插件已初始化”。UAL 默认通过 IAT API 拦截延迟加载插件，拦截未成功时可能只转发系统 DLL；具体触发原因还待区分。两次实验也可能存在调试器和普通启动的差异。
 
-单目录兼容性测试：只在 `Data/global.ini` 将 `DontLoadFromDllMain=0`、`ForceEntryPointHook=0`，保留 `LoadPlugins=1`、`LoadFromScriptsOnly=1`、`LoadRecursively=0`，使 UAL 直接扫描插件。此模式尚未在用户游戏中验证，不能先作为已完成的修复；测试细节见 [启动链诊断](docs/LAUNCH_TRACE.md)。桥接的哈希校验与工作线程初始化仍保留。
+单目录的延迟初始化和 `DontLoadFromDllMain=0` / `ForceEntryPointHook=0` 直接初始化尝试均未成功；现阶段固定已验证的双目录布局，并恢复 `DontLoadFromDllMain=1`。排查记录保留在 [启动链诊断](docs/LAUNCH_TRACE.md)，本轮继续 MCP 接入，不再调整加载策略。
 
 ASI 通过 `InitializeASI` 启动工作线程，`DllMain` 不安装 hook。模块初始化后固定驻留至进程退出；**首版没有热卸载**，替换插件前退出游戏。卸载时移走新增加的 ASI/loader，按备份恢复已有文件。
 
@@ -87,7 +87,21 @@ UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。
 
 新增独立外部 `ra3trace.exe`，用 Windows 调试事件记录启动器和继承调试链的子进程、DLL 实际加载路径、调试输出、异常和退出。现有 Toolhub `cargo-build` 会同时构建它；`cargo-test` 包含子进程冒烟测试，不启动游戏。
 
-手动跟踪命令、日志位置和范围限制见 [启动链跟踪](docs/LAUNCH_TRACE.md)。它不会注入桥接，双目录实验已确认游戏初始化桥接；单目录初始化方式仍在验证，输入测试以对应游戏 PID 的 Ready 为前提。
+手动跟踪命令、日志位置和范围限制见 [启动链跟踪](docs/LAUNCH_TRACE.md)。它不会注入桥接；双目录部署已通过游戏加载与 CLI 输入验收，后续诊断仍以对应游戏 PID 的日志为准。
+
+## 常驻 MCP 服务
+
+`ra3ctl` 0.2.0 同时提供 CLI 与 stdio MCP 服务。由 Toolhub 托管一个长期运行的子进程：
+
+```powershell
+.\target\release\ra3ctl.exe mcp --transport stdio
+```
+
+服务支持 MCP 2026-07-28，以及 2025-11-25 / 2025-06-18 握手客户端。首次列工具不连接游戏；每次鼠标工具显式传 PID。缓存独占管道可用 `ra3_disconnect` 交还 CLI；点击/拖动串行执行，无额外切前台等待。
+
+完整参数、生命周期、错误、取消及配置见 [Toolhub MCP 接入规范](docs/MCP_TOOLHUB.md)，[客户端配置示例](config/mcp-client.example.json) 和 [机器可读工具清单](controller/mcp-tools.json)。
+
+2026-10-17 用户已在保留根目录与 Data 副本的布局下确认原 CLI 的 ping、点击、拖动通过；单目录初始化尝试未成功，本轮维持该部署基线，后续验收 MCP 调用。
 
 ## 点击和拖动
 
@@ -111,6 +125,6 @@ UAL 在游戏根目录使用 D3D9 或 WinMM 代理均已有用户加载测试。
 
 ## 验证与后续接入
 
-本机验证步骤和 Toolhub 待配置命令见 [本地验证计划](docs/TOOLHUB.md)。[协议文档](docs/PROTOCOL.md) 可以直接用于后续 Rust MCP server 或其他控制器。
+本机编译命令和验收步骤见 [MCP 接入规范](docs/MCP_TOOLHUB.md)，历史构建操作参考见 [本地验证计划](docs/TOOLHUB.md)。[桥接协议文档](docs/PROTOCOL.md) 描述控制器与 ASI 之间的 24 字节命名管道协议。
 
 项目采用 Apache-2.0；静态链接的 MinHook 保留其 BSD 许可证，`Stage.ps1` 会一并复制。ASI Loader 单独下载并遵循其许可证。仓库不包含游戏二进制、游戏资源或第三方预编译 DLL。

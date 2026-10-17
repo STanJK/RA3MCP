@@ -18,7 +18,7 @@
 
 移出根目录副本后的跟踪记录游戏 PID 40564 加载 Data/winmm.dll，未映射 ASI。下一步定位的是插件初始化，不能继续归为代理未加载。成功记录与该轮跟踪还可能存在调试器差异；目前没有充分证据断言根目录副本是必需的。
 
-保持 Data 的文件布局，退出游戏后仅修改 Data/global.ini，测试 UAL 的直接初始化模式：
+下列为已经尝试的 Data 单目录直接初始化配置，用户随后反馈仍不成功；现阶段恢复已验证的根目录 + Data 双份和 DontLoadFromDllMain=1，不再继续加载简化：
 
 ```ini
 [GlobalSets]
@@ -29,7 +29,7 @@ LoadFromScriptsOnly=1
 LoadRecursively=0
 ```
 
-这会在 UAL 自身的 DllMain 内扫描/加载插件并调用 InitializeASI；桥接的 DllMain 仍不安装 Hook，InitializeASI 只启动工作线程，版本校验和 Hook 安装在线程中执行。此模式是尚待用户验证的兼容性测试。若仍失败，保留这轮跟踪；恢复已验证双目录对照时将 DontLoadFromDllMain 改回 1，并保持其他变量一致。
+这会在 UAL 自身的 DllMain 内扫描/加载插件并调用 InitializeASI；桥接的 DllMain 仍不安装 Hook，InitializeASI 只启动工作线程，版本校验和 Hook 安装在线程中执行。此模式的本轮实测结果仍为失败。加载策略固定为已验证的双目录对照；后续原 CLI 的 ping、点击和拖动均已获用户确认通过。
 
 ## 构建
 

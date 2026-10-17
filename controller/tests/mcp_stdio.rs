@@ -208,3 +208,20 @@ fn stalled_bridge_times_out_without_replaying_and_server_stays_alive() {
     client.reply(2);
     client.shutdown();
 }
+
+#[test]
+fn existing_cli_click_and_drag_keep_their_wire_sequences() {
+    for action in [
+        vec!["click", "left", "800", "450", "1"],
+        vec!["drag", "left", "900", "600", "300", "200", "1", "3"],
+    ] {
+        let fixture = fixture(false);
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ra3ctl")).args(["--pid", &fixture.pid.to_string()])
+            .args(&action).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("held=0"));
+        let packets = fixture.finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        let expected = if action[0] == "click" { vec![1, 2, 3] } else { vec![1, 2, 1, 1, 1, 3] };
+        assert_eq!(packets.iter().map(|p| p[6]).collect::<Vec<_>>(), expected);
+    }
+}

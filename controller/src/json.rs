@@ -25,10 +25,26 @@ impl Json {
     }
     pub fn integer(&self) -> Option<i64> {
         match self {
-            Self::Number(v) => v.parse().ok().or_else(|| {
-                let n: f64 = v.parse().ok()?;
-                (n.is_finite() && n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_991.0).then_some(n as i64)
-            }),
+            Self::Number(v) => {
+                // Exact decimal arithmetic: rounding through f64 could silently
+                // accept a fractional coordinate or alter an integer request ID.
+                let (mantissa, exponent) = v.find(['e', 'E']).map_or((v.as_str(), "0"), |at| (&v[..at], &v[at + 1..]));
+                let negative = mantissa.starts_with('-');
+                let digits: String = mantissa.chars().filter(|c| c.is_ascii_digit()).collect();
+                let digits = digits.trim_start_matches('0');
+                if digits.is_empty() { return Some(0); }
+                let fraction = mantissa.split_once('.').map_or(0, |(_, fraction)| fraction.len() as i64);
+                let shift = exponent.parse::<i64>().ok()?.checked_sub(fraction)?;
+                let magnitude = if shift >= 0 {
+                    if shift > 19 || digits.len() as i64 + shift > 19 { return None; }
+                    format!("{digits}{}", "0".repeat(shift as usize))
+                } else {
+                    let cut = usize::try_from(shift.checked_neg()?).ok()?;
+                    if cut >= digits.len() || !digits.as_bytes()[digits.len() - cut..].iter().all(|v| *v == b'0') { return None; }
+                    digits[..digits.len() - cut].into()
+                };
+                format!("{}{magnitude}", if negative { "-" } else { "" }).parse().ok()
+            }
             _ => None,
         }
     }
@@ -204,5 +220,14 @@ mod tests {
             assert!(parse(text).is_err(), "{text}");
         }
         assert!(parse(&format!("{}0{}", "[".repeat(66), "]".repeat(66))).is_err());
+    }
+    #[test]
+    fn integer_fields_are_exact_without_floating_point_rounding() {
+        for (text, expected) in [("1.000", Some(1)), ("1e3", Some(1000)), ("0e99999999999999999999", Some(0)),
+            ("9007199254740993", Some(9007199254740993)), ("-9223372036854775808", Some(i64::MIN)),
+            ("9223372036854775808", None), ("1.00000000000000000001", None), ("1e-999", None),
+            ("4294967295.0", Some(4294967295)), ("-0.0000000000000000000000000001", None)] {
+            assert_eq!(parse(text).unwrap().integer(), expected, "{text}");
+        }
     }
 }

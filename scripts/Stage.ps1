@@ -24,6 +24,10 @@ Copy-Item $license (Join-Path $stage 'licenses/MinHook-LICENSE.txt') -Force
 Copy-Item (Join-Path $repo 'LICENSE') (Join-Path $stage 'licenses/RA3MCP-LICENSE.txt') -Force
 Copy-Item (Join-Path $repo 'config/global.ini.example') (Join-Path $stage 'global.ini.example') -Force
 Copy-Item (Join-Path $repo 'README.md') (Join-Path $stage 'README.md') -Force
+New-Item -ItemType Directory -Force (Join-Path $stage 'docs') | Out-Null
+Copy-Item (Join-Path $repo 'docs/MCP_TOOLHUB.md') (Join-Path $stage 'docs/MCP_TOOLHUB.md') -Force
+Copy-Item (Join-Path $repo 'config/mcp-client.example.json') (Join-Path $stage 'mcp-client.example.json') -Force
+Copy-Item (Join-Path $repo 'controller/mcp-tools.json') (Join-Path $stage 'mcp-tools.json') -Force
 Write-Output "Staged: $stage"
 Write-Output 'Game-side deployment: Data/winmm.dll, Data/global.ini, Data/scripts/RA3InputBridge.asi. Successful testing also kept root copies; see README.'
 Write-Output 'Copy the verified downloads/ual-win32/d3d9.dll as winmm.dll; merge global.ini.example as global.ini in each deployment directory.'

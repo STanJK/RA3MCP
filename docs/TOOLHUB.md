@@ -181,7 +181,7 @@ git-status
 
 ## Staging
 
-`scripts/Stage.ps1` 当前仅负责将已经存在的 ASI、`ra3ctl.exe`、`ra3trace.exe`、许可证、示例配置和 README 复制到 `dist/Release`。它暂时不作为 ToolHub 编译能力暴露。当前成功实验同时保留根目录和 Data 的副本；游戏加载位置为 `Data/winmm.dll`、`Data/global.ini` 和 `Data/scripts/RA3InputBridge.asi`，日志为 `Data/scripts/RA3InputBridge.log`。准备产物 `downloads/ual-win32/d3d9.dll` 在 WinMM 部署时改名。单目录初始化方式仍在验证。`Data/ra3_1.12.game` 是被控制的主模块路径。
+`scripts/Stage.ps1` 当前仅负责将已经存在的 ASI、`ra3ctl.exe`、`ra3trace.exe`、许可证、示例配置和 README 复制到 `dist/Release`。它暂时不作为 ToolHub 编译能力暴露。当前成功实验同时保留根目录和 Data 的副本；游戏加载位置为 `Data/winmm.dll`、`Data/global.ini` 和 `Data/scripts/RA3InputBridge.asi`，日志为 `Data/scripts/RA3InputBridge.log`。准备产物 `downloads/ual-win32/d3d9.dll` 在 WinMM 部署时改名。单目录初始化尝试未成功，当前保留已验证的双目录部署。`Data/ra3_1.12.game` 是被控制的主模块路径。
 
 如果 staging 进入日常自动验证流程，再单独实现固定语义 operation；不要因此引入通用 PowerShell 执行能力。
 
@@ -191,9 +191,15 @@ git-status
 
 游戏跟踪由用户手动执行，命令与日志说明见 [LAUNCH_TRACE.md](LAUNCH_TRACE.md)。日志覆盖继承调试链的进程与 DLL 事件；Steam 通过已有进程代启等脱离调试链的情况仍需补充系统范围跟踪。
 
+## 常驻 MCP 后端
+
+ra3ctl 0.2.0 新增 `ra3ctl.exe mcp --transport stdio`，由 Toolhub 的 stdio 客户端长期托管。现有 cargo-check/build/test 已覆盖它，无第三方 crate 和新构建 operation。接入合同及通用配置见 [MCP_TOOLHUB.md](MCP_TOOLHUB.md)，工具 schema 见 `controller/mcp-tools.json`。
+
+cargo-test 的新增集成测试启动真实 MCP 子进程并连接专用模拟管道，测试协议、点击/拖动包序列、取消、超时及 EOF 清理；不会连接真实游戏。对游戏的 MCP 输入验收由用户接入 Toolhub 后进行。
+
 ## 游戏内验收（建议离线单人局）
 
-2026-10-17 双目录实验中，游戏 PID 39836 从 Data 加载 ASI，通过固定哈希校验、安装 Hook 并创建管道。移出根目录副本后的跟踪只见 Data 代理，未见 ASI，仍需验证初始化模式；具体原因尚未确认。每轮记录游戏文件哈希、插件 commit、PID、分辨率和 `Data/scripts/RA3InputBridge.log`，以对应游戏 PID 的 Ready 为输入验收前提。当前不要求与 ReShade 共存。
+2026-10-17 双目录实验中，游戏 PID 39836 从 Data 加载 ASI，通过固定哈希校验、安装 Hook 并创建管道。移出根目录副本后的跟踪只见 Data 代理，未见 ASI，单目录直接初始化随后也未成功；当前保留双目录部署，原 CLI 的 ping、点击和拖动已由用户确认通过。每轮记录游戏文件哈希、插件 commit、PID、分辨率和 `Data/scripts/RA3InputBridge.log`，以对应游戏 PID 的 Ready 为输入验收前提。当前不要求与 ReShade 共存。
 
 | 项目 | 操作 | 应检查的结果 |
 | --- | --- | --- |
