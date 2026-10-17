@@ -182,6 +182,16 @@ constexpr uint32_t kAgentPlayerReadable = 1u << 6;
 constexpr uint32_t kAgentPlayerOwnerVerified = 1u << 7;
 constexpr uint32_t kAgentPlayerListReadable = 1u << 8;
 constexpr uint32_t kAgentPlayerSlotVerified = 1u << 9;
+constexpr uint32_t kAgentPersonalityIdentityValid = 1u << 10;
+constexpr uint32_t kAgentBudgetVectorValid = 1u << 11;
+constexpr uint32_t kAgentBudgetVectorTruncated = 1u << 12;
+constexpr uint32_t kAgentBuildVectorValid = 1u << 13;
+constexpr uint32_t kAgentBuildVectorTruncated = 1u << 14;
+constexpr uint32_t kAgentBankReadable = 1u << 15;
+constexpr uint32_t kAgentTargetManagerReadable = 1u << 16;
+constexpr uint32_t kAgentTargetVectorTruncated = 1u << 17;
+constexpr uint32_t kAgentTacticManagerReadable = 1u << 18;
+constexpr uint32_t kAgentTacticVectorTruncated = 1u << 19;
 
 uint64_t unixMilliseconds() {
     FILETIME time{};
@@ -221,12 +231,63 @@ template<class T> T loadAt(uintptr_t address) {
     return value;
 }
 
+bool captureAssetIdentity(uintptr_t definition, uint32_t& assetId, uint32_t& typeId, uint32_t& instanceId) {
+    if(!readableRange(definition, sizeof(uint32_t))) return false;
+    const uintptr_t id = loadAt<uint32_t>(definition);
+    assetId = uint32_t(id);
+    if(!readableRange(id, 2 * sizeof(uint32_t))) return false;
+    typeId = loadAt<uint32_t>(id);
+    instanceId = loadAt<uint32_t>(id + 4);
+    return true;
+}
+
+void captureStateEntry(uintptr_t wrapper, uintptr_t runtimeRecord, ra3::ai::StateEntry& entry) {
+    entry.wrapper = uint32_t(wrapper);
+    entry.scoreBits = loadAt<uint32_t>(runtimeRecord + 4);
+    entry.flags = loadAt<uint8_t>(runtimeRecord + 8);
+    if(!readableRange(wrapper + 0x10, sizeof(uint32_t))) return;
+    const uintptr_t definition = loadAt<uint32_t>(wrapper + 0x10);
+    entry.definition = uint32_t(definition);
+    captureAssetIdentity(definition, entry.assetId, entry.assetTypeId, entry.assetInstanceId);
+}
+
+template<size_t N>
+void captureStateVector(uintptr_t owner, size_t offset, uint32_t validFlag, uint32_t truncatedFlag,
+                        uint32_t& flags, uint32_t& beginOut, uint32_t& endOut,
+                        uint32_t& capacityEndOut, uint32_t& totalOut, uint32_t& countOut,
+                        uint32_t& capacityOut, std::array<ra3::ai::StateEntry, N>& entries) {
+    constexpr size_t kStateSize = 12;
+    const uintptr_t begin = loadAt<uint32_t>(owner + offset);
+    const uintptr_t end = loadAt<uint32_t>(owner + offset + 4);
+    const uintptr_t capacityEnd = loadAt<uint32_t>(owner + offset + 8);
+    beginOut = uint32_t(begin);
+    endOut = uint32_t(end);
+    capacityEndOut = uint32_t(capacityEnd);
+    const bool empty = begin == 0 && end == 0 && capacityEnd == 0;
+    if(!empty && (!begin || begin > end || end > capacityEnd ||
+       (end - begin) % kStateSize != 0 || (capacityEnd - begin) % kStateSize != 0)) return;
+    const size_t total = empty ? 0 : (end - begin) / kStateSize;
+    const size_t capacity = empty ? 0 : (capacityEnd - begin) / kStateSize;
+    const size_t copied = total < N ? total : N;
+    if(copied && !readableRange(begin, copied * kStateSize)) return;
+    flags |= validFlag;
+    totalOut = uint32_t(total);
+    countOut = uint32_t(copied);
+    capacityOut = uint32_t(capacity);
+    if(copied < total) flags |= truncatedFlag;
+    for(size_t i = 0; i < copied; ++i) {
+        const uintptr_t record = begin + i * kStateSize;
+        captureStateEntry(loadAt<uint32_t>(record), record, entries[i]);
+    }
+}
+
 ra3::ai::AgentSnapshot captureAgent(void* selfPointer) {
     ra3::ai::AgentSnapshot snapshot{};
     const uintptr_t self = reinterpret_cast<uintptr_t>(selfPointer);
     snapshot.captureSequence = g_planeCaptureSequence.fetch_add(1, std::memory_order_relaxed) + 1;
     snapshot.capturedUnixMs = unixMilliseconds();
     snapshot.skirmishAi = uint32_t(self);
+    snapshot.imageBase = uint32_t(g_base);
     if(!readableRange(self, 0x914)) return snapshot;
 
     snapshot.flags |= kAgentSelfReadable;
@@ -303,42 +364,115 @@ ra3::ai::AgentSnapshot captureAgent(void* selfPointer) {
             snapshot.budgetDefinitions = loadAt<uint32_t>(definition + 0x160);
             snapshot.buildDefinitionCount = loadAt<uint32_t>(definition + 0x164);
             snapshot.buildDefinitions = loadAt<uint32_t>(definition + 0x168);
+            if(captureAssetIdentity(definition, snapshot.personalityAssetId,
+                                    snapshot.personalityAssetTypeId,
+                                    snapshot.personalityAssetInstanceId)) {
+                snapshot.flags |= kAgentPersonalityIdentityValid;
+            }
         }
     }
 
     const uintptr_t strategy = snapshot.strategyManager;
-    if(readableRange(strategy, 0x1C)) {
+    if(readableRange(strategy, 0x90)) {
         snapshot.flags |= kAgentStrategyManagerReadable;
         snapshot.strategyEnabled = loadAt<uint8_t>(strategy + 0x10);
         snapshot.strategyInterval = loadAt<uint32_t>(strategy + 0x14);
         snapshot.strategyNextFrame = loadAt<uint32_t>(strategy + 0x18);
+
+        snapshot.targetManager = uint32_t(strategy + 0x1C);
+        const uintptr_t targetBegin = loadAt<uint32_t>(strategy + 0x38);
+        const size_t targetTotal = loadAt<uint32_t>(strategy + 0x3C);
+        const size_t targetCopied = targetTotal < ra3::ai::kMaxTargets ? targetTotal : ra3::ai::kMaxTargets;
+        snapshot.targetBegin = uint32_t(targetBegin);
+        snapshot.targetTotalCount = uint32_t(targetTotal);
+        if((!targetCopied && !targetBegin) ||
+           (targetBegin && (!targetCopied || readableRange(targetBegin, targetCopied * 0x2CC)))) {
+            snapshot.flags |= kAgentTargetManagerReadable;
+            snapshot.targetCount = uint32_t(targetCopied);
+            if(targetCopied < targetTotal) snapshot.flags |= kAgentTargetVectorTruncated;
+            for(size_t i = 0; i < targetCopied; ++i) {
+                const uintptr_t record = targetBegin + i * 0x2CC;
+                auto& target = snapshot.targets[i];
+                target.record = uint32_t(record);
+                target.stateWrapper = loadAt<uint32_t>(record + 0x08);
+                target.tactic = loadAt<uint32_t>(record + 0x0C);
+                target.objectId = loadAt<uint32_t>(record + 0x20);
+                target.statusBits = uint32_t(loadAt<uint8_t>(record + 0x74)) |
+                    uint32_t(loadAt<uint8_t>(record + 0x75)) << 8 |
+                    uint32_t(loadAt<uint8_t>(record + 0x76)) << 16;
+                target.stateSelectionFrame = loadAt<uint32_t>(record + 0x2C4);
+                ra3::ai::StateEntry identity{};
+                if(target.stateWrapper && readableRange(target.stateWrapper + 0x10, sizeof(uint32_t))) {
+                    identity.wrapper = target.stateWrapper;
+                    identity.definition = loadAt<uint32_t>(target.stateWrapper + 0x10);
+                    captureAssetIdentity(identity.definition, identity.assetId,
+                                         identity.assetTypeId, identity.assetInstanceId);
+                }
+                target.stateDefinition = identity.definition;
+                target.stateAssetId = identity.assetId;
+                target.stateAssetTypeId = identity.assetTypeId;
+                target.stateAssetInstanceId = identity.assetInstanceId;
+            }
+        }
+
+        snapshot.tacticManager = uint32_t(strategy + 0x78);
+        const uintptr_t tacticBegin = loadAt<uint32_t>(strategy + 0x84);
+        const uintptr_t tacticEnd = loadAt<uint32_t>(strategy + 0x88);
+        const uintptr_t tacticCapacityEnd = loadAt<uint32_t>(strategy + 0x8C);
+        snapshot.tacticBegin = uint32_t(tacticBegin);
+        snapshot.tacticEnd = uint32_t(tacticEnd);
+        snapshot.tacticCapacityEnd = uint32_t(tacticCapacityEnd);
+        const bool emptyTactics = tacticBegin == 0 && tacticEnd == 0 && tacticCapacityEnd == 0;
+        if(emptyTactics || (tacticBegin && tacticBegin <= tacticEnd && tacticEnd <= tacticCapacityEnd &&
+           (tacticEnd - tacticBegin) % sizeof(uint32_t) == 0 &&
+           (tacticCapacityEnd - tacticBegin) % sizeof(uint32_t) == 0)) {
+            const size_t total = emptyTactics ? 0 : (tacticEnd - tacticBegin) / sizeof(uint32_t);
+            const size_t capacity = emptyTactics ? 0 : (tacticCapacityEnd - tacticBegin) / sizeof(uint32_t);
+            const size_t copied = total < ra3::ai::kMaxTactics ? total : ra3::ai::kMaxTactics;
+            if(!copied || readableRange(tacticBegin, copied * sizeof(uint32_t))) {
+                snapshot.flags |= kAgentTacticManagerReadable;
+                snapshot.tacticTotalCount = uint32_t(total);
+                snapshot.tacticCount = uint32_t(copied);
+                snapshot.tacticCapacityCount = uint32_t(capacity);
+                if(copied < total) snapshot.flags |= kAgentTacticVectorTruncated;
+                for(size_t i = 0; i < copied; ++i) {
+                    const uintptr_t instance = loadAt<uint32_t>(tacticBegin + i * sizeof(uint32_t));
+                    if(!readableRange(instance, ra3::ai::kTacticWordCount * sizeof(uint32_t))) continue;
+                    auto& tactic = snapshot.tactics[i];
+                    tactic.instance = uint32_t(instance);
+                    for(size_t word = 0; word < ra3::ai::kTacticWordCount; ++word)
+                        tactic.words[word] = loadAt<uint32_t>(instance + word * sizeof(uint32_t));
+                    const uintptr_t vtable = tactic.words[0];
+                    if(vtable >= g_base) tactic.vtableRva = uint32_t(vtable - g_base);
+                }
+            }
+        }
     }
 
-    const uintptr_t begin = loadAt<uint32_t>(self + 0x6E0);
-    const uintptr_t end = loadAt<uint32_t>(self + 0x6E4);
-    const uintptr_t capacityEnd = loadAt<uint32_t>(self + 0x6E8);
-    snapshot.stateBegin = uint32_t(begin);
-    snapshot.stateEnd = uint32_t(end);
-    snapshot.stateCapacityEnd = uint32_t(capacityEnd);
-    constexpr size_t kStateSize = 12;
-    const bool empty = begin == 0 && end == 0 && capacityEnd == 0;
-    if(empty || (begin && begin <= end && end <= capacityEnd &&
-                 (end - begin) % kStateSize == 0 && (capacityEnd - begin) % kStateSize == 0)) {
-        const size_t total = empty ? 0 : (end - begin) / kStateSize;
-        const size_t capacity = empty ? 0 : (capacityEnd - begin) / kStateSize;
-        const size_t copied = total < ra3::ai::kMaxStrategicStates ? total : ra3::ai::kMaxStrategicStates;
-        if(!copied || readableRange(begin, copied * kStateSize)) {
-            snapshot.flags |= kAgentStateVectorValid;
-            snapshot.stateTotalCount = uint32_t(total);
-            snapshot.stateCapacityCount = uint32_t(capacity);
-            snapshot.stateCount = uint32_t(copied);
-            if(copied < total) snapshot.flags |= kAgentStateVectorTruncated;
-            for(size_t i = 0; i < copied; ++i) {
-                const uintptr_t state = begin + i * kStateSize;
-                snapshot.states[i].definition = loadAt<uint32_t>(state);
-                snapshot.states[i].scoreBits = loadAt<uint32_t>(state + 4);
-                snapshot.states[i].flags = loadAt<uint8_t>(state + 8);
-            }
+    captureStateVector(self, 0x6E0, kAgentStateVectorValid, kAgentStateVectorTruncated,
+                       snapshot.flags, snapshot.stateBegin, snapshot.stateEnd,
+                       snapshot.stateCapacityEnd, snapshot.stateTotalCount, snapshot.stateCount,
+                       snapshot.stateCapacityCount, snapshot.states);
+    captureStateVector(self, 0x0E8, kAgentBudgetVectorValid, kAgentBudgetVectorTruncated,
+                       snapshot.flags, snapshot.budgetStateBegin, snapshot.budgetStateEnd,
+                       snapshot.budgetStateCapacityEnd, snapshot.budgetStateTotalCount,
+                       snapshot.budgetStateCount, snapshot.budgetStateCapacityCount,
+                       snapshot.budgetStates);
+    captureStateVector(self, 0x414, kAgentBuildVectorValid, kAgentBuildVectorTruncated,
+                       snapshot.flags, snapshot.buildStateBegin, snapshot.buildStateEnd,
+                       snapshot.buildStateCapacityEnd, snapshot.buildStateTotalCount,
+                       snapshot.buildStateCount, snapshot.buildStateCapacityCount,
+                       snapshot.buildStates);
+
+    if(readableRange(self + 0x0C,
+                     ra3::ai::kBankAccountCount * ra3::ai::kBankAccountWordCount * sizeof(uint32_t)) &&
+       readableRange(self + 0x100, sizeof(uint32_t))) {
+        snapshot.flags |= kAgentBankReadable;
+        snapshot.currentBudget = loadAt<uint32_t>(self + 0x100);
+        for(size_t account = 0; account < ra3::ai::kBankAccountCount; ++account) {
+            const uintptr_t address = self + 0x0C + account * 36;
+            for(size_t word = 0; word < ra3::ai::kBankAccountWordCount; ++word)
+                snapshot.bankAccounts[account].words[word] = loadAt<uint32_t>(address + word * 4);
         }
     }
     return snapshot;
@@ -509,7 +643,7 @@ std::vector<uint8_t> planeDispatch(const ra3::ai::RequestPacket& packet) {
 DWORD WINAPI servePlane(void*) {
     const std::wstring name = L"\\\\.\\pipe\\RA3MCP.AI." + std::to_wstring(GetCurrentProcessId());
     char message[160]{};
-    sprintf_s(message, "AI data plane ready: \\\\.\\pipe\\RA3MCP.AI.%lu (snapshot protocol v2)",
+    sprintf_s(message, "AI data plane ready: \\\\.\\pipe\\RA3MCP.AI.%lu (snapshot protocol v3)",
               GetCurrentProcessId());
     bool announced = false;
     for(;;) {
