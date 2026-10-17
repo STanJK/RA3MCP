@@ -39,18 +39,18 @@ int main() {
     auto& agent=plane.agents[3];
     agent.playerSlot=3; agent.skirmishAi=0x12340000; agent.captureSequence=9;
     agent.stateCount=1; agent.stateTotalCount=1;
-    agent.states[0]={0x76540000,0x3f000000,1};
+    agent.states[0]={0x76540000,0x3f000000,1,0x70000000,0x71000000,0,0x7c55e8d8};
     const auto response=ai::encodeResponse(plane,0x10203040,ai::Status::Ok);
-    check(response.size()==ai::kResponseHeaderSize+224);
+    check(response.size()==ai::kResponseHeaderSize+568);
     check(ai::read32(response.data())==ai::kMagic);
     check(ai::read32(response.data()+8)==0x10203040);
-    check(ai::read32(response.data()+12)==224);
+    check(ai::read32(response.data()+12)==568);
     check(ai::read32(response.data()+20)==1);
     check(ai::read32(response.data()+36)==(1u<<3));
     check(ai::read32(response.data()+40)==4);
-    check(ai::read32(response.data()+ai::kResponseHeaderSize)==224);
-    check(ai::read32(response.data()+ai::kResponseHeaderSize+68)==3);
-    check(ai::read32(response.data()+ai::kResponseHeaderSize+212)==0x76540000);
+    check(ai::read32(response.data()+ai::kResponseHeaderSize)==568);
+    check(ai::read32(response.data()+ai::kResponseHeaderSize+72)==3);
+    check(ai::read32(response.data()+ai::kResponseHeaderSize+540)==0x76540000);
     std::cout<<"input/AI protocols, validation, and bounded FIFO tests passed\n";
 }
 
